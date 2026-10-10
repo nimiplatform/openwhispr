@@ -115,140 +115,45 @@ function scenario(t, { decode, stream, online = false } = {}) {
       language: "en",
       display: true,
     });
-  const audio = () => {
-    const pcm = Buffer.alloc(1600);
-    for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(8000, i);
-    listeners.get("dictation-preview-audio")({}, pcm);
-  };
   t.after(() => invoke("dismiss-dictation-preview"));
   return {
     calls,
     invoke,
     start,
-    audio,
     tick: () => Promise.all([...timers.values()].map((callback) => callback())),
   };
 }
 
-test("offline stop skips pending preview audio while final audio still reaches transcription", async (t) => {
-  const s = scenario(t);
-  await s.start();
-  s.audio();
-  assert.deepEqual(await s.invoke("stop-dictation-preview", { flushed: true }), {
-    success: true,
-    streamed: false,
-    text: "",
-  });
-  assert.equal(s.calls.decode.length, 0, "the preview tail must not compete with final decoding");
-  assert.equal(s.calls.held.length, 1);
-  const finalAudio = Buffer.from("the complete MediaRecorder recording, including pre-roll");
-  const result = await s.invoke("transcribe-local-parakeet", finalAudio, {
-    model: "orukeet-v0.1.0",
-    language: "en",
-  });
-  assert.equal(result.text, "recognized");
-  assert.equal(s.calls.decode.length, 1);
-  assert.strictEqual(s.calls.decode[0].audio, finalAudio);
-});
-
-test("regular offline previews still decode, but an in-flight result cannot append after stop", async (t) => {
-  const pending = deferred();
-  const s = scenario(t, { decode: () => pending.promise });
-  await s.start();
-  s.audio();
-  const ticking = s.tick();
-  assert.equal(s.calls.decode.length, 1);
-  await s.invoke("stop-dictation-preview");
-  pending.resolve({ success: true, text: "late preview" });
-  await ticking;
-  assert.deepEqual(s.calls.appended, []);
-  assert.equal(s.calls.held.length, 1);
-});
-
-test("a cancelled preview cannot append or release the next session's in-flight guard", async (t) => {
-  const old = deferred();
-  const current = deferred();
-  let requests = 0;
-  const s = scenario(t, { decode: () => (++requests === 1 ? old.promise : current.promise) });
-  await s.start();
-  s.audio();
-  const oldTick = s.tick();
-  await s.invoke("dismiss-dictation-preview");
-  await s.start("parakeet-tdt-0.6b-v3");
-  s.audio();
-  const currentTick = s.tick();
-  old.resolve({ success: true, text: "stale session" });
-  await oldTick;
-  s.audio();
-  await s.tick();
-  assert.equal(requests, 2, "old completion must not clear the current busy guard");
-  assert.deepEqual(s.calls.appended, []);
-  current.resolve({ success: true, text: "current session" });
-  await currentTick;
-  assert.deepEqual(s.calls.appended, ["current session"]);
-  assert.deepEqual(
-    s.calls.decode.map(({ options }) => options.model),
-    ["orukeet-v0.1.0", "parakeet-tdt-0.6b-v3"]
-  );
-});
-
-test("online stop still flushes the stream and commits a complete result", async (t) => {
-  const sent = [];
-  let finishes = 0;
+test("native preview operations display supplied real text and never run an App inference backend", async (t) => {
   const s = scenario(t, {
     online: true,
     stream: {
-      sendPcm16: (pcm) => sent.push(pcm),
-      finish: async () => {
-        finishes++;
-        return { text: "complete stream" };
+      finish() {
+        assert.fail("retired inference stream");
       },
-      abort() {},
     },
   });
-  await s.start("online-model");
-  s.audio();
-  assert.deepEqual(await s.invoke("stop-dictation-preview", { flushed: true }), {
-    success: true,
-    streamed: true,
-    text: "complete stream",
-  });
-  assert.equal(finishes, 1);
-  assert.equal(sent.length, 1);
-  assert.equal(s.calls.decode.length, 0);
-  assert.deepEqual(s.calls.shown, ["", "complete stream"]);
-});
-
-for (const [label, flushed, result] of [
-  ["renderer flush failure", false, { text: "partial" }],
-  ["truncated server result", true, { text: "partial", truncated: true }],
-]) {
-  test(`online ${label} still requires the full-recording fallback`, async (t) => {
-    const s = scenario(t, {
-      online: true,
-      stream: {
-        sendPcm16() {},
-        finish: async () => result,
-        abort() {},
-      },
-    });
-    await s.start("online-model");
-    assert.deepEqual(await s.invoke("stop-dictation-preview", { flushed }), {
-      success: true,
-      streamed: false,
-      text: "partial",
-    });
-  });
-}
-
-test("failed online startup skips the offline preview tail and leaves final decoding enabled", async (t) => {
-  const s = scenario(t, { online: true, stream: new Error("stream unavailable") });
-  await s.start("online-model");
-  s.audio();
-  assert.deepEqual(await s.invoke("stop-dictation-preview", { flushed: true }), {
+  await s.start();
+  await s.invoke("update-dictation-preview", "actual Nimi text");
+  assert.deepEqual(await s.invoke("stop-dictation-preview", { showCleanup: true }), {
     success: true,
     streamed: false,
     text: "",
   });
   assert.equal(s.calls.decode.length, 0);
+  assert.equal(s.calls.held.length, 1);
+  assert.ok(s.calls.shown.includes("actual Nimi text"));
+  assert.equal(listeners.has("dictation-preview-audio"), false);
+});
+test("completion and dismiss remain ordered after native preview creation", async (t) => {
+  const s = scenario(t);
+  await s.start();
+  await s.invoke("update-dictation-preview", "returned text");
+  await s.invoke("dismiss-dictation-preview");
+  assert.equal(s.calls.hidden, 1);
+  assert.deepEqual(await s.invoke("stop-dictation-preview"), {
+    success: true,
+    streamed: false,
+    text: "",
+  });
 });

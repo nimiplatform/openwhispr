@@ -4,145 +4,93 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Module = require("node:module");
-
-const HOTKEY_ENV_KEYS = ["VOICE_AGENT_KEY", "CHAT_AGENT_KEY"];
-
-function snapshotEnvironment() {
-  return new Map(
-    HOTKEY_ENV_KEYS.map((name) => [
-      name,
-      { present: Object.hasOwn(process.env, name), value: process.env[name] },
-    ])
-  );
-}
-
-function restoreEnvironment(snapshot) {
-  for (const [name, { present, value }] of snapshot) {
-    if (present) process.env[name] = value;
-    else delete process.env[name];
-  }
-}
-
-function loadEnvironmentManager(t, userDataDirectory) {
-  const environmentPath = require.resolve("../../src/helpers/environment");
-  const originalEnvironmentModule = require.cache[environmentPath];
-  const originalLoad = Module._load;
-  delete require.cache[environmentPath];
-
-  Module._load = function loadWithTestDependencies(request, parent, isMain) {
-    if (request === "electron") {
-      return {
-        app: {
-          getPath: () => userDataDirectory,
-          getAppPath: () => userDataDirectory,
-          isReady: () => false,
-        },
-        safeStorage: { isEncryptionAvailable: () => false },
-      };
-    }
-    if (request === "./secretCrypto") return { isAvailable: () => false };
-    return originalLoad.call(this, request, parent, isMain);
+const keys = [
+  "DICTATION_KEY",
+  "VOICE_AGENT_KEY",
+  "CHAT_AGENT_KEY",
+  "TRANSLATION_KEY",
+  "UI_LANGUAGE",
+  "OPENAI_API_KEY",
+  "OPENWHISPR_API_URL",
+];
+function setup(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openwhispr-business-env-"));
+  const snapshot = new Map(keys.map((k) => [k, process.env[k]]));
+  const filename = require.resolve("../../src/helpers/environment");
+  const original = require.cache[filename],
+    loader = Module._load;
+  delete require.cache[filename];
+  Module._load = function (request, parent, main) {
+    if (request === "./appData" && parent?.filename === filename)
+      return { getAppDataDirectory: () => dir };
+    if (request === "./i18nMain" && parent?.filename === filename)
+      return { normalizeUiLanguage: (v) => v };
+    return loader.call(this, request, parent, main);
   };
-
+  let Environment;
   try {
-    return require(environmentPath);
+    Environment = require(filename);
   } finally {
-    Module._load = originalLoad;
-    t.after(() => {
-      if (originalEnvironmentModule) require.cache[environmentPath] = originalEnvironmentModule;
-      else delete require.cache[environmentPath];
-    });
+    Module._load = loader;
   }
+  t.after(() => {
+    for (const [k, v] of snapshot) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    if (original) require.cache[filename] = original;
+    else delete require.cache[filename];
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, Environment };
 }
-
-function installDotenvStub(t) {
-  const dotenvPath = require.resolve("dotenv");
-  const originalDotenv = require.cache[dotenvPath];
-  require.cache[dotenvPath] = {
-    id: dotenvPath,
-    filename: dotenvPath,
-    loaded: true,
-    exports: { config: () => ({ parsed: {} }) },
-  };
-  t.after(() => {
-    if (originalDotenv) require.cache[dotenvPath] = originalDotenv;
-    else delete require.cache[dotenvPath];
-  });
-}
-
-test("adopts a legacy chat-agent hotkey as the voice-agent hotkey", async (t) => {
-  const userDataDirectory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "openwhispr-voice-agent-hotkey-")
+test("loads business settings while leaving historical provider keys unconsumed", (t) => {
+  const { dir, Environment } = setup(t);
+  delete process.env.OPENAI_API_KEY;
+  fs.writeFileSync(
+    path.join(dir, ".env"),
+    'DICTATION_KEY="Control_R"\nOPENWHISPR_API_URL=https://business.example\nOPENAI_API_KEY=old-test-secret\n'
   );
-  const environmentSnapshot = snapshotEnvironment();
-  const originalResourcesPath = process.resourcesPath;
-  process.resourcesPath = userDataDirectory;
-  delete process.env.VOICE_AGENT_KEY;
-  process.env.CHAT_AGENT_KEY = "CommandOrControl+;";
-
-  t.after(() => {
-    restoreEnvironment(environmentSnapshot);
-    process.resourcesPath = originalResourcesPath;
-    fs.rmSync(userDataDirectory, { recursive: true, force: true });
-  });
-
-  installDotenvStub(t);
-  const EnvironmentManager = loadEnvironmentManager(t, userDataDirectory);
-  const environmentManager = new EnvironmentManager();
-  const saveAllKeysToEnvFile = environmentManager.saveAllKeysToEnvFile.bind(environmentManager);
-  let persistence;
-  environmentManager.saveAllKeysToEnvFile = () => {
-    persistence = saveAllKeysToEnvFile();
-    return persistence;
-  };
-
-  const hotkey = environmentManager.getVoiceAgentKey();
-
-  assert.equal(hotkey, "CommandOrControl+;");
-  assert.ok(persistence);
-  const persistenceResult = await persistence;
-  const persistedEnvPath = path.join(userDataDirectory, ".env");
-  const persistedEnv = fs.readFileSync(persistedEnvPath, "utf8");
-
-  assert.equal(persistenceResult.path, persistedEnvPath);
-  assert.equal(process.env.VOICE_AGENT_KEY, "CommandOrControl+;");
-  assert.equal(process.env.CHAT_AGENT_KEY, undefined);
-  assert.match(persistedEnv, /^VOICE_AGENT_KEY=CommandOrControl\+;$/m);
-  assert.doesNotMatch(persistedEnv, /^CHAT_AGENT_KEY=/m);
-});
-
-test("device cleanup clears persisted settings and encrypted secret files", async (t) => {
-  const userDataDirectory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "openwhispr-device-settings-cleanup-")
-  );
-  const environmentSnapshot = new Map(
-    ["OPENAI_API_KEY", "START_MINIMIZED"].map((name) => [
-      name,
-      { present: Object.hasOwn(process.env, name), value: process.env[name] },
-    ])
-  );
-  const originalResourcesPath = process.resourcesPath;
-  process.resourcesPath = userDataDirectory;
-  t.after(() => {
-    restoreEnvironment(environmentSnapshot);
-    process.resourcesPath = originalResourcesPath;
-    fs.rmSync(userDataDirectory, { recursive: true, force: true });
-  });
-
-  installDotenvStub(t);
-  const EnvironmentManager = loadEnvironmentManager(t, userDataDirectory);
-  const environmentManager = new EnvironmentManager();
-  const secureKeysDirectory = path.join(userDataDirectory, "secure-keys");
-  fs.mkdirSync(secureKeysDirectory, { recursive: true });
-  fs.writeFileSync(path.join(userDataDirectory, ".env"), "START_MINIMIZED=true\n");
-  fs.writeFileSync(path.join(secureKeysDirectory, "OPENAI_API_KEY.enc"), "secret");
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.START_MINIMIZED = "true";
-
-  await environmentManager.clearAllPersistedData();
-
+  const env = new Environment();
+  assert.equal(env.getDictationKey(), "Control_R");
   assert.equal(process.env.OPENAI_API_KEY, undefined);
-  assert.equal(process.env.START_MINIMIZED, undefined);
-  assert.equal(fs.existsSync(path.join(userDataDirectory, ".env")), false);
-  assert.equal(fs.existsSync(secureKeysDirectory), false);
+  assert.equal(process.env.OPENWHISPR_API_URL, "https://business.example");
+  assert.equal(env.getOpenAIKey, undefined);
+});
+test("saving business preferences preserves unknown lines and encrypted historical files", async (t) => {
+  const { dir, Environment } = setup(t);
+  const lines =
+    "# preserved comment\nOPENAI_API_KEY=historical-test-value\nCUSTOM_SETTING=keep me\nDICTATION_KEY=old\n";
+  fs.writeFileSync(path.join(dir, ".env"), lines);
+  fs.mkdirSync(path.join(dir, "secure-keys"));
+  fs.writeFileSync(path.join(dir, "secure-keys", "old.enc"), "historical bytes");
+  const env = new Environment();
+  env.saveDictationKey('Control+中文;"quoted"');
+  await env.saveAllKeysToEnvFile();
+  const saved = fs.readFileSync(path.join(dir, ".env"), "utf8");
+  assert.ok(saved.includes("OPENAI_API_KEY=historical-test-value\n"));
+  assert.ok(saved.includes("CUSTOM_SETTING=keep me\n"));
+  assert.ok(saved.includes("# preserved comment\n"));
+  assert.equal(require("dotenv").parse(saved).DICTATION_KEY, 'Control+中文;"quoted"');
+  assert.equal(
+    fs.readFileSync(path.join(dir, "secure-keys", "old.enc"), "utf8"),
+    "historical bytes"
+  );
+});
+test("an old chat-agent key never installs a new voice hotkey", (t) => {
+  const { Environment } = setup(t);
+  delete process.env.VOICE_AGENT_KEY;
+  process.env.CHAT_AGENT_KEY = "Control+;";
+  const env = new Environment();
+  assert.equal(env.getVoiceAgentKey(), "");
+  assert.equal(process.env.CHAT_AGENT_KEY, "Control+;");
+});
+test("explicit device erasure is confined to the selected business root", async (t) => {
+  const { dir, Environment } = setup(t);
+  fs.writeFileSync(path.join(dir, ".env"), "START_MINIMIZED=true");
+  fs.mkdirSync(path.join(dir, "secure-keys"));
+  fs.writeFileSync(path.join(dir, "secure-keys", "old.enc"), "x");
+  await new Environment().clearAllPersistedData();
+  assert.equal(fs.existsSync(path.join(dir, ".env")), false);
+  assert.equal(fs.existsSync(path.join(dir, "secure-keys")), false);
 });

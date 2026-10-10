@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const fs = require("fs");
+const { mediaHelperEnvironment } = require("./mediaHelperEnvironment");
 const os = require("os");
 const path = require("path");
 const debugLogger = require("./debugLogger");
@@ -132,6 +133,7 @@ function runFFmpegConversion(args, outputPath, { signal } = {}) {
     const proc = spawn(ffmpegPath, [...args, "-y", outputPath], {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
+      env: mediaHelperEnvironment(),
     });
 
     let stderr = "";
@@ -142,7 +144,6 @@ function runFFmpegConversion(args, outputPath, { signal } = {}) {
       } catch {
         // an uncaught throw here would escape the abort dispatch
       }
-      reject(createAbortError());
     };
     signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -152,13 +153,13 @@ function runFFmpegConversion(args, outputPath, { signal } = {}) {
 
     proc.on("error", (error) => {
       signal?.removeEventListener("abort", onAbort);
-      if (signal?.aborted) return;
+      if (signal?.aborted) { reject(createAbortError()); return; }
       reject(new Error(`FFmpeg process error: ${error.message}`));
     });
 
     proc.on("close", (code) => {
       signal?.removeEventListener("abort", onAbort);
-      if (signal?.aborted) return;
+      if (signal?.aborted) { reject(createAbortError()); return; }
       if (code !== 0) {
         const stderrPreview = stderr.slice(-500).trim();
         debugLogger.debug("FFmpeg conversion failed", { code, stderr: stderrPreview });
@@ -196,7 +197,7 @@ function convertToWav(inputPath, outputPath, options = {}) {
   });
 
   return runFFmpegConversion(
-    ["-i", inputPath, "-ar", String(sampleRate), "-ac", String(channels), "-c:a", "pcm_s16le"],
+      ["-i", inputPath, "-ar", String(sampleRate), "-ac", String(channels), "-c:a", "pcm_s16le", "-rf64", "auto"],
     outputPath,
     { signal }
   );

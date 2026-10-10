@@ -1,0 +1,15 @@
+packages:
+  - .
+overrides:
+  '@nimiplatform/app-tools': file:D:/nimi-realm/nimi/.nimi/local/openwhispr/packages/speaker-final/nimiplatform-app-tools-0.11.4.tgz
+  '@nimiplatform/sdk': file:D:/nimi-realm/nimi/.nimi/local/openwhispr/packages/async-jobs-297323ce7/nimiplatform-sdk-0.21.0.tgz
+  '@nimiplatform/kit': file:D:/nimi-realm/nimi/.nimi/local/openwhispr/packages/async-jobs-297323ce7/nimiplatform-kit-0.18.0.tgz
+  '@nimiplatform/kit-protected-local-win32-x64': file:D:/nimi-realm/nimi/.nimi/local/openwhispr/packages/async-jobs-297323ce7/nimiplatform-kit-protected-local-win32-x64-0.18.0.tgz
+  '@nimiplatform/sdk-adapter-vercel-ai': file:D:/nimi-realm/nimi/.nimi/local/openwhispr/packages/baseline/nimiplatform-sdk-adapter-vercel-ai-0.5.0.tgz
+  electron: 42.10.1
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
+  - ffmpeg-static
+  - onnxruntime-node
+  - protobufjs

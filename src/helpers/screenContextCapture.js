@@ -119,4 +119,10 @@ async function requestAccess() {
   return getAccessStatus();
 }
 
-module.exports = { getAccessStatus, getAccessResult, captureActiveDisplay, requestAccess };
+module.exports = {
+  getAccessStatus,
+  getAccessResult,
+  captureActiveDisplay,
+  requestAccess,
+  MAX_ENCODED_BYTES,
+};

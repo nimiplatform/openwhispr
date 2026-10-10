@@ -11,6 +11,7 @@ import {
 } from "../stores/meetingRecordingStore";
 import { requestMeetingRecordingAutoEnd } from "../helpers/meetingRecordingSession";
 import logger from "../utils/logger";
+import { providerErrorActions } from "../utils/describeProviderError";
 
 const EMA_PREV = 0.5;
 const EMA_NEXT = 0.5;
@@ -31,6 +32,7 @@ export default function MeetingRecordingMount(): null {
   const isRecording = useMeetingRecordingStore((s) => s.isRecording);
   const isTranscribing = useMeetingRecordingStore((s) => s.isTranscribing);
   const error = useMeetingRecordingStore((s) => s.error);
+  const errorDetails = useMeetingRecordingStore((s) => s.errorDetails);
   const errorNonce = useMeetingRecordingStore((s) => s.errorNonce);
   const systemAudioSilentWarning = useMeetingRecordingStore((s) => s.systemAudioSilentWarning);
   const systemAudioInterrupted = useMeetingRecordingStore((s) => s.systemAudioInterrupted);
@@ -77,11 +79,16 @@ export default function MeetingRecordingMount(): null {
     const errorKey = MEETING_ERROR_KEYS[sentinel];
     toast({
       title: t("notes.meeting.title"),
-      description: errorKey ? t(errorKey, { provider: argument }) : error,
+      description: errorDetails?.messageKey
+        ? t(errorDetails.messageKey, errorDetails.messageParams)
+        : errorKey
+          ? t(errorKey, { provider: argument })
+          : error,
       variant: "destructive",
+      actions: errorDetails ? providerErrorActions(errorDetails, t) : undefined,
     });
     // errorNonce re-fires this toast when the same error repeats back-to-back.
-  }, [error, errorNonce, toast, t]);
+  }, [error, errorDetails, errorNonce, toast, t]);
 
   // The store latches this once per recording; the ref keeps dependency
   // changes (e.g. a language switch recreating `t`) from re-firing the toast.

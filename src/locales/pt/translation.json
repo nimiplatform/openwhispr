@@ -669,6 +669,9 @@
       "retryTranscription": "Retranscrever",
       "retrying": "Retranscrevendo…",
       "retrySuccess": "Transcrição atualizada",
+      "recordedFailureReason": "Motivo da falha registrada: {{reason}}",
+      "retryNotificationWarning": "Transcrição salva; algumas janelas não puderam ser notificadas.",
+      "retryEditingWarning": "Transcrição salva; parte do processamento do texto não foi concluída.",
       "retryError": "Falha ao retranscrever",
       "audioNotFound": "Arquivo de áudio não encontrado ou expirado",
       "noAiProcessing": "Nenhum processamento de IA foi aplicado a esta transcrição",
@@ -881,7 +884,8 @@
         "agentUnavailable": "Assistente indisponível",
         "screenContextSkipped": "Contexto de tela ignorado",
         "dailyLimitReached": "Limite diário atingido",
-        "providerRateLimited": "Limite de taxa do provedor"
+        "providerRateLimited": "Limite de taxa do provedor",
+        "cancellationUnconfirmed": "Cancelamento não confirmado"
       },
       "fallback": {
         "title": "Modo de fallback",
@@ -963,7 +967,8 @@
       },
       "pasteFailed": {
         "title": "Não foi possível colar automaticamente"
-      }
+      },
+      "dictionaryPromptTooLong": "O dicionário de ditado é demasiado longo. Reduza as entradas e tente novamente."
     },
     "clipboard": {
       "pasteFailed": {
@@ -3073,9 +3078,9 @@
       "transcriptionFailed": "Falha na transcrição",
       "errorOccurred": "Ocorreu um erro",
       "noSpeechDetected": "Nenhuma fala detectada neste áudio.",
-      "noProviderTitle": "Nenhum provedor de transcrição configurado",
-      "noProviderDescription": "Adicione uma chave API ou baixe um modelo local para começar a transcrever.",
-      "noProviderAction": "Abrir configurações de transcrição",
+      "noProviderTitle": "A transcrição do Nimi está indisponível",
+      "noProviderDescription": "Escolha um modelo de transcrição disponível no Nimi. Se a sessão expirou, entre no Nimi e tente novamente.",
+      "noProviderAction": "Abrir modelos do Nimi",
       "fileTooLarge": "Este arquivo excede o limite de 500 MB.",
       "largeFileNote": "Arquivos grandes são divididos e transcritos em paralelo.",
       "chunkProgress": "Transcrevendo parte {{completed}} de {{total}}...",
@@ -3149,7 +3154,11 @@
       "systemAudioQuiet": {
         "title": "O áudio da reunião ficou silencioso",
         "description": "Ninguém foi ouvido nos últimos minutos. Se a chamada ainda estiver acontecendo, verifique seu dispositivo de saída de som."
-      }
+      },
+      "finishing": "Finalizando a transcrição e salvando…",
+      "cancelFinishing": "Parar processamento e manter gravação",
+      "saved": "Transcrição e gravação salvas",
+      "canceled": "Processamento cancelado; gravação mantida"
     },
     "meetingPill": {
       "returnToNote": "Voltar à gravação",
@@ -3238,7 +3247,7 @@
         }
       },
       "errors": {
-        "noModel": "Nenhum modelo de IA selecionado. Configure um nas Configurações.",
+        "noModel": "Nenhum modelo de texto Nimi disponível. Escolha um nas configurações de modelos Nimi.",
         "actionFailed": "A ação falhou",
         "noEndpoint": "Nenhum URL de servidor auto-hospedado definido. Configure um nas Configurações.",
         "outputTruncated": "O modelo de IA ficou sem espaço antes de terminar, então a nota ficou como estava.",
@@ -4851,6 +4860,68 @@
     "details": {
       "provider": "Provedor",
       "requestId": "ID da solicitação"
+    }
+  },
+  "nimi": {
+    "transcriptionSpeakerOptionsUnsupported": "Esta solicitação de transcrição foi recusada. A tarefa solicita intervalos de falantes. Verifique a configuração do Nimi, o formato de áudio, o idioma, o vocabulário e as demais opções. As gravações salvas podem ser abertas pelo arquivo original da nota. Motivo: {{reason}}",
+    "transcriptionTimingUnsupported": "Esta solicitação de transcrição foi recusada. A tarefa solicita informações de tempo. Verifique a configuração do Nimi, o formato de áudio, o idioma, o vocabulário e as demais opções antes de tentar novamente a gravação salva. Motivo: {{reason}}",
+    "meetingModelRequirements": "Reuniões precisam de tempos reais das palavras. Para distinguir falantes, escolha no Nimi um modelo que também os separe. Estar disponível não confirma essas opções.",
+    "sessionConnectionTitle": "Conexão com Nimi indisponível",
+    "sessionConnectionUnavailable": "O app não conseguiu conectar ao Nimi. Verifique este app no Nimi e tente novamente. Motivo: {{reason}}",
+    "sessionScopeChanged": "A conta mudou durante a preparação. Inicie uma nova tarefa.",
+    "checkConnection": "Verificar conexão",
+    "sessionRecordingRecovery": "Se a gravação foi mantida, abra Início e escolha Transcrever novamente no menu Mais ações da gravação.",
+    "pasteNotDelivered": "O texto não foi inserido",
+    "pasteRecovery": "Volte ao editor original e tente novamente, ou cole manualmente o texto copiado.",
+    "pasteRecoveryCopyFailed": "A cópia também falhou. Copie o texto abaixo e cole-o manualmente.",
+    "startupUnavailable": "Este registro de desenvolvimento não permite iniciar automaticamente. Abra o app pelo Nimi.",
+    "desktopNotReady": "Inicie o Nimi Desktop, conclua o login e tente novamente.",
+    "modelsTitle": "Modelos Nimi",
+    "modelsDescription": "Escolha modelos de voz, texto e embeddings no Nimi. As credenciais permanecem no Nimi.",
+    "signInRequired": "Entre no Nimi Desktop para configurar e usar a IA. Você pode configurar dispositivos e atalhos agora.",
+    "openNimi": "Abrir Nimi",
+    "retry": "Tentar novamente",
+    "deferMicrophone": "Usar notas agora e ativar o microfone depois",
+    "microphoneRequired": "A gravação precisa de permissão do microfone. As notas já estão disponíveis.",
+    "microphoneSettings": "Configurações do microfone",
+    "speakerLabelsPending": "Os rótulos de falantes ainda estão sendo integrados ao Nimi. A transcrição sem rótulos pode ser usada separadamente.",
+    "originalSource": "Arquivo original",
+    "searchSemantic": "pesquisa semântica",
+    "searchKeyword": "pesquisa por palavras-chave",
+    "searchScope": " em {{space}}",
+    "searchEmpty": "Nenhuma nota encontrada para «{{query}}»{{scope}} ({{method}})",
+    "searchResults": "{{count}} notas encontradas para «{{query}}»{{scope}} ({{method}})",
+    "searchUnavailable": "A pesquisa não está disponível. Tente novamente.",
+    "previewUnavailableTitle": "A prévia ao vivo parou",
+    "previewUnavailableDescription": "A gravação continua. Ao parar, o Nimi tentará transcrever a gravação completa.",
+    "speakerRepresentations": "Impressões de voz",
+    "speakerMatchingIncomplete": "Algumas vozes não puderam ser identificadas. Os intervalos originais foram salvos. Confira os nomes manualmente ou o modelo de voz no Nimi.",
+    "microphoneUnknown": "A permissão do microfone não está confirmada. Verifique as configurações do sistema; as notas já estão disponíveis.",
+    "restartTitle": "Reiniciar aplicativo",
+    "restartDescription": "Nimi reabrirá este aplicativo. Pare a gravação e conclua o processamento primeiro.",
+    "restartBusy": "Pare a gravação e conclua o processamento antes de reiniciar.",
+    "businessAIManaged": "As restrições de IA do espaço ainda não podem ser verificadas para Nimi. A IA está indisponível nesta conta gerenciada; notas e funções sem IA continuam disponíveis.",
+    "updatesManaged": "Nimi gerencia as atualizações. Este registro de desenvolvimento não possui um pacote instalado para atualizar.",
+    "appDataTitle": "Dados do aplicativo",
+    "appDataDescription": "Gerencie configurações, notas, histórico, gravações e índice de busca deste aplicativo.",
+    "appDataReset": "Exclui configurações, notas, histórico, gravações e índice locais deste aplicativo. Os modelos e credenciais Nimi são mantidos.",
+    "updatesOpen": "Abrir gerenciamento de apps Nimi",
+    "businessAIUnresolved": "A política do espaço não foi resolvida. Tente novamente após confirmar a conta; as notas continuam disponíveis.",
+    "recordingMedia": {
+      "recording": "Gravação {{number}}",
+      "mic": "Microfone",
+      "system": "Áudio do sistema",
+      "seconds": "{{seconds}} s",
+      "status": {
+        "processing": "Processando",
+        "completed": "Concluída",
+        "canceled": "Cancelada",
+        "failed": "Falhou",
+        "unknown": "Estado desconhecido"
+      },
+      "openFailed": "Arquivo de mídia não encontrado",
+      "checkFile": "Verifique se o arquivo original ainda está neste dispositivo.",
+      "unavailable": "Nenhuma mídia original disponível."
     }
   }
 }

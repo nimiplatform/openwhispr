@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { Message, ToolCallInfo } from "./types";
 import type { ContainerScope } from "../../types/chat";
+import { withoutEchoedToolTrace } from "./historyMessages";
 
 interface UseChatPersistenceOptions {
   conversationId?: number | null;
@@ -18,7 +19,11 @@ export interface ChatPersistence {
   ) => Promise<number>;
   loadConversation: (id: number) => Promise<void>;
   saveUserMessage: (text: string) => Promise<void>;
-  saveAssistantMessage: (content: string, toolCalls?: ToolCallInfo[]) => Promise<void>;
+  saveAssistantMessage: (
+    content: string,
+    toolCalls?: ToolCallInfo[],
+    nimiTranscript?: import("ai").ModelMessage[]
+  ) => Promise<void>;
   handleNewChat: () => void;
 }
 
@@ -71,9 +76,12 @@ export function useChatPersistence(options: UseChatPersistenceOptions = {}): Cha
       return {
         id: crypto.randomUUID(),
         role: m.role as Message["role"],
-        content: m.content,
+        content: m.role === "assistant" ? withoutEchoedToolTrace(m.content) : m.content,
         isStreaming: false,
         ...(toolCalls ? { toolCalls } : {}),
+        ...(parsed?.nimiTranscript
+          ? { nimiTranscript: parsed.nimiTranscript as import("ai").ModelMessage[] }
+          : {}),
       };
     });
     setMessages(loaded);
@@ -85,16 +93,26 @@ export function useChatPersistence(options: UseChatPersistenceOptions = {}): Cha
     }
   }, []);
 
-  const saveAssistantMessage = useCallback(async (content: string, toolCalls?: ToolCallInfo[]) => {
-    if (conversationIdRef.current) {
-      window.electronAPI?.addAgentMessage?.(
-        conversationIdRef.current,
-        "assistant",
-        content,
-        toolCalls?.length ? { toolCalls } : undefined
-      );
-    }
-  }, []);
+  const saveAssistantMessage = useCallback(
+    async (
+      content: string,
+      toolCalls?: ToolCallInfo[],
+      nimiTranscript?: import("ai").ModelMessage[]
+    ) => {
+      if (conversationIdRef.current) {
+        await window.electronAPI?.addAgentMessage?.(
+          conversationIdRef.current,
+          "assistant",
+          withoutEchoedToolTrace(content),
+          {
+            ...(toolCalls?.length ? { toolCalls } : {}),
+            ...(nimiTranscript ? { nimiTranscript } : {}),
+          }
+        );
+      }
+    },
+    []
+  );
 
   const handleNewChat = useCallback(() => {
     setMessages([]);

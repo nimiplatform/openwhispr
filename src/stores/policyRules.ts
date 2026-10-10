@@ -15,6 +15,12 @@ export interface PolicyDecisionSnapshot {
   appVersion: string | null;
 }
 
+export function isNimiBusinessAIAllowed(
+  state: PolicyDecisionSnapshot & { managed?: boolean }
+): boolean {
+  return !state.managed && (state.status === "idle" || state.status === "unmanaged");
+}
+
 function managedPolicy(state: PolicyDecisionSnapshot): OrgPolicy | null {
   return state.status === "managed" && state.policy ? state.policy : null;
 }

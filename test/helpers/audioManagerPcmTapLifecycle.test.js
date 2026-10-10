@@ -128,42 +128,14 @@ const offlineLocal = {
   showTranscriptionPreview: false,
 };
 
-test("only offline local engines get a tap", async (t) => {
-  const { setSettings, createManager } = await loadWithSettings(t, offlineLocal);
-  const manager = createManager({ getWorkletBlobUrl: () => "blob:worklet" });
-  const taps = (settings) => {
-    setSettings(settings);
-    const tap = manager._startPcmTap();
-    tap?.close();
-    return tap !== null;
-  };
-
-  assert.equal(taps({ useLocalWhisper: true, localTranscriptionProvider: "whisper" }), true);
-  assert.equal(taps(offlineLocal), true);
-  assert.equal(taps({ useLocalWhisper: true, localTranscriptionProvider: "cohere" }), true);
-  assert.equal(
-    taps({
-      useLocalWhisper: true,
-      localTranscriptionProvider: "nvidia",
-      parakeetModel: "nemotron-speech-streaming-en-0.6b",
-    }),
-    false,
-    "online models commit their own stream"
-  );
-  assert.equal(taps({ useLocalWhisper: false, cloudTranscriptionMode: "byok" }), false);
-  assert.equal(taps({ useLocalWhisper: false, cloudTranscriptionMode: "openwhispr" }), false);
-});
-
-test("managed enterprise transcription gets no tap even with local settings", async (t) => {
-  const { createManager } = await loadWithSettings(t, offlineLocal, {
-    "/services/managedTranscription.ts": `
-      export const getManagedTranscriptionResolution = () => ({ kind: "managed" });
-      export const isManagedTranscriptionActive = () => true;
-    `,
-  });
-  const manager = createManager({ getWorkletBlobUrl: () => "blob:worklet" });
-
-  assert.equal(manager._startPcmTap(), null);
+test("Nimi capture creates a PCM tap for the selected public transcription path", async (t) => {
+  const { createManager } = await loadWithSettings(t, { preferredLanguage: "en" });
+  const manager = createManager();
+  const tap = manager._startPcmTap();
+  assert.ok(tap);
+  assert.match(manager.getWorkletBlobUrl(), /^blob:/);
+  URL.revokeObjectURL(manager.workletBlobUrl);
+  tap.close();
 });
 
 function startingManager(AudioManager, { prepared, tap, events }) {
@@ -249,4 +221,95 @@ test("without a prepared capture the tap is built before the mic opens and attac
   assert.equal(await manager.startRecording(), true);
   assert.strictEqual(manager._batchPcmTap, tap);
   assert.deepEqual(events, ["tap", "acquire", "recorder", "attach:fresh"]);
+});
+
+test("actual recording setup feeds finite preview through the existing protected Nimi command and retires its old tap", async (t) => {
+  const calls = [];
+  let reply;
+  globalThis.__nimiPreviewPort = (command, input, signal) => {
+    calls.push({ command, input, signal });
+    return new Promise((resolve) => {
+      reply = resolve;
+    });
+  };
+  t.after(() => {
+    delete globalThis.__nimiPreviewPort;
+  });
+  const { AudioManager } = await loadWithSettings(
+    t,
+    { showTranscriptionPreview: true, preferredLanguage: "zh" },
+    {
+      "/services/nimiClient":
+        "export const runNimiRequest = (...args) => globalThis.__nimiPreviewPort(...args);",
+    }
+  );
+  const events = [];
+  const tap = { ...fakeTap(events, "preview"), capturedPcm: () => [] };
+  const manager = startingManager(AudioManager, { prepared: null, tap, events });
+  manager.getEffectiveSttLanguage = () => "zh";
+  const texts = [];
+  manager.onPartialTranscript = (text) => texts.push(text);
+  t.after(() => manager.teardownSpeechGate());
+  assert.equal(await manager.startRecording(), true);
+  tap.onPcm(new Int16Array(32000));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls[0].command, "openwhispr.ai.transcribe");
+  assert.equal(calls[0].input.language, "zh");
+  assert.equal(calls[0].input.mimeType, "audio/wav");
+  manager.cleanupPreview({ dismiss: true });
+  assert.equal(calls[0].signal.aborted, true);
+  reply({ transcript: { text: "ignored late fixture" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  tap.onPcm(new Int16Array(32000));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(texts, []);
+});
+
+test("renderer disposal cancels in-flight work and discards capture instead of starting a final AI request", async (t) => {
+  const { createManager } = await loadWithSettings(t, {});
+  const controller = new AbortController();
+  let canceled = 0;
+  const manager = createManager({
+    _processingCancellationGeneration: 0,
+    _activeProcessingPipeline: { controller },
+    _nimiPreview: { close() {} },
+    micRecovery: { stop() {} },
+    preparedMicCapture: { cancel() {} },
+    micStreamHold: { drop() {} },
+    _closeBatchPcmTap() {},
+    mediaRecorder: { state: "recording" },
+    cancelRecording: () => {
+      canceled++;
+    },
+    stopRecording: () => {
+      assert.fail("must not launch final decoding on disposal");
+    },
+    getStreamingProvider: () => ({}),
+  });
+  manager.cleanup();
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(canceled, 1);
+  assert.equal(manager._processingCancellationGeneration, 1);
+});
+
+
+test("preview auto and Chinese UI language values match final transcription inputs", async t => {
+  const calls = []; globalThis.__nimiPreviewPort = async (command, input) => { calls.push({ command, input }); return { transcript: { text: "declared fixture" } }; };
+  t.after(() => { delete globalThis.__nimiPreviewPort; });
+  const { AudioManager, setSettings } = await loadWithSettings(t, { showTranscriptionPreview: true }, { "/services/nimiClient": "export const runNimiRequest = (...args) => globalThis.__nimiPreviewPort(...args);" });
+  for (const [selected, expected] of [["auto", ""], ["zh-CN", "zh"], ["zh-TW", "zh"]]) {
+    setSettings({ showTranscriptionPreview: true }); const events = []; const tap = { ...fakeTap(events, selected), capturedPcm: () => [] };
+    const manager = startingManager(AudioManager, { prepared: null, tap, events }); manager.getEffectiveSttLanguage = () => selected;
+    await manager.startRecording(); tap.onPcm(new Int16Array(32000)); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls.at(-1).input.language, expected); manager.cleanupPreview({ dismiss: true }); manager.teardownSpeechGate();
+  }
+});
+test("preview error clears its old draft and reports nonfatal retirement while capture continues", async t => {
+  globalThis.__nimiPreviewPort = async () => { throw new Error("declared-platform-failure"); }; t.after(() => { delete globalThis.__nimiPreviewPort; });
+  const { AudioManager, window } = await loadWithSettings(t, { showTranscriptionPreview: true }, { "/services/nimiClient": "export const runNimiRequest = (...args) => globalThis.__nimiPreviewPort(...args);" });
+  const events = []; const tap = { ...fakeTap(events, "error"), capturedPcm: () => [] }; const manager = startingManager(AudioManager, { prepared: null, tap, events });
+  manager.getEffectiveSttLanguage = () => "auto"; let notice = 0, hidden = 0; manager.onPreviewUnavailable = () => { notice++; }; window.electronAPI.hideDictationPreview = () => { hidden++; };
+  await manager.startRecording(); tap.onPcm(new Int16Array(32000)); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(manager.isRecording, true); assert.equal(manager._nimiPreview.closed, true); assert.equal(notice, 1); assert.equal(hidden, 1);
+  tap.onPcm(new Int16Array(32000)); assert.equal(notice, 1); manager.teardownSpeechGate();
 });

@@ -1,5 +1,5 @@
 const { createAbortError } = require("./abortError");
-const { formatTimestamp } = require("./speakerMerge");
+const { formatTimestamp } = require("./audioTimestamp");
 const { i18nMain } = require("./i18nMain");
 
 // Retry/backoff/concurrency policy for the chunked cloud upload path (#1326).

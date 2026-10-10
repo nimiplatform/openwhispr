@@ -1,0 +1,8 @@
+app_id: ai.nimi.openwhispr
+display_name: OpenWhispr
+version: 1.10.2
+npm_package_name: open-whispr
+cargo_package_name: open-whispr-shell
+tauri_identifier: ai.nimi.apps.ai.nimi.openwhispr
+package_author: OpenWhispr Team <support@openwhispr.com>
+identity_role: scaffold-generated-authoring-input

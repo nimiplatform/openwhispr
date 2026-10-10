@@ -19,6 +19,8 @@ import {
   Users,
 } from "../icons";
 import ShareNoteDialog, { type NoteExportOption } from "./ShareNoteDialog";
+import { NoteSourceMediaButton } from "./NoteSourceMediaButton";
+import { listTranscriptSources } from "../../utils/transcriptMedia.mjs";
 import { reconcileLocalShareState } from "./shareNoteRules";
 import {
   canOrganizeNote,
@@ -44,6 +46,8 @@ import { useAuth } from "../../hooks/useAuth";
 import { RichTextEditor } from "../ui/RichTextEditor";
 import type { Editor } from "@tiptap/react";
 import { MeetingTranscriptChat, SelectionBar } from "./MeetingTranscriptChat";
+import { ImportedTranscript } from "./ImportedTranscript";
+import logger from "../../utils/logger";
 import {
   useMeetingRecordingStore,
   type TranscriptSegment,
@@ -165,13 +169,14 @@ type LiveMeetingTranscriptChatProps = Omit<
   | "systemPartialSpeakerId"
   | "systemPartialSpeakerName"
   | "isRecording"
->;
+> & { importMedia?: import("../../types/electron").NoteSourceMedia };
 
 // Subscribes to live transcript state at this leaf so per-update re-renders
 // don't reach the editor/chat (which would drop text selection).
 function LiveMeetingTranscriptChat({
   speakerProfiles,
   speakerMappings,
+  importMedia,
   ...props
 }: LiveMeetingTranscriptChatProps) {
   const segments = useMeetingRecordingStore((s) => s.segments);
@@ -184,6 +189,26 @@ function LiveMeetingTranscriptChat({
     () => buildKnownSpeakers(speakerProfiles ?? [], segments, speakerMappings ?? {}),
     [segments, speakerMappings, speakerProfiles]
   );
+
+  if (importMedia?.chunks) {
+    return (
+      <ImportedTranscript
+        segments={segments}
+        originalText={importMedia.chunks.map((chunk) => chunk.transcript.text).join("\n")}
+        media={importMedia}
+        className={props.contentClassName}
+        speakerMappings={speakerMappings}
+        speakerProfiles={knownSpeakers}
+        participants={props.participants}
+        onMapSpeaker={props.onMapSpeaker}
+        onConfirmSuggestion={props.onConfirmSuggestion}
+        onDismissSuggestion={props.onDismissSuggestion}
+        selectedIds={props.selectedSegmentIds ?? new Set()}
+        readOnly={!props.onToggleSelect}
+        onToggleGroup={(ids) => ids.forEach((id) => props.onToggleSelect?.(id))}
+      />
+    );
+  }
 
   return (
     <MeetingTranscriptChat
@@ -211,7 +236,10 @@ interface NoteEditorProps {
   onStartRecording: () => void;
   onStopRecording: () => void;
   onExportNote?: (format: "md" | "txt") => void;
-  onExportTranscript?: (format: "txt" | "srt" | "json" | "md") => void;
+  onExportTranscript?: (
+    format: "txt" | "srt" | "json" | "md",
+    source?: import("../../types/electron").NoteTranscriptSource
+  ) => void;
   enhancement?: Enhancement;
   /** Runs a template, or an action that edits the summary, on this note. */
   onRunNoteAction?: (action: ActionItem) => void;
@@ -459,6 +487,31 @@ export default function NoteEditor({
     return parseTranscriptSegments(note.transcript || "");
   }, [diarizedSegments, note.transcript]);
 
+  // Lists intentionally omit the large raw import result. Fetch it only for
+  // this open note, through its existing account-scoped business owner.
+  const [loadedImportMedia, setLoadedImportMedia] = useState<{
+    noteId: number;
+    media: NoteItem["source_media"];
+  } | null>(null);
+  useEffect(() => {
+    if (note.source_media) return;
+    let current = true;
+    void window.electronAPI
+      .getNote(note.id)
+      .then((full) => {
+        if (current && full?.id === note.id) {
+          setLoadedImportMedia({ noteId: note.id, media: full.source_media });
+        }
+      })
+      .catch((error) => logger.warn("Failed to read imported note media", error));
+    return () => {
+      current = false;
+    };
+  }, [note.id, note.note_type, note.source_media, note.account_id, note.updated_at]);
+  const importMedia =
+    note.source_media ??
+    (loadedImportMedia?.noteId === note.id ? loadedImportMedia.media : undefined);
+
   const templates = useActionsOfKind("template");
   const noteActions = useActionsOfKind("action");
   const chatActions = useMemo(() => noteActions.filter((a) => a.output === "chat"), [noteActions]);
@@ -641,29 +694,6 @@ export default function NoteEditor({
     }
     prevRecordingForDiarizationRef.current = isRecording;
   }, [diarizationSessionId, isRecording, scheduleUiUpdate]);
-
-  // Persistence happens in meetingRecordingStore's module-level listener
-  // (#1495); this only mirrors a published result into the rendered note's UI.
-  const completedDiarization = useMeetingRecordingStore((s) => s.completedDiarization);
-  useEffect(() => {
-    if (!completedDiarization || completedDiarization.noteId !== note.id) return;
-    // Consume so a remount can't repaint this overlay over newer edits; the
-    // transcript itself is already persisted.
-    useMeetingRecordingStore.setState({ completedDiarization: null });
-    setIsDiarizing(false);
-
-    const enriched = completedDiarization.segments;
-    if (enriched.length === 0) return;
-    setDiarizedSegments(enriched);
-
-    const autoMappings: Record<string, string> = {};
-    for (const s of enriched) {
-      if (s.speakerName && s.speaker) autoMappings[s.speaker] = s.speakerName;
-    }
-    if (Object.keys(autoMappings).length > 0) {
-      setSpeakerMappings((prev) => ({ ...autoMappings, ...prev }));
-    }
-  }, [completedDiarization, note.id]);
 
   const persistDisplaySegments = useCallback(
     async (nextSegments: TranscriptSegment[], updateOverlay = true) => {
@@ -971,11 +1001,30 @@ export default function NoteEditor({
 
   const exportOptions = useMemo<NoteExportOption[]>(() => {
     if (viewMode === "transcript" && onExportTranscript) {
-      return (["txt", "srt", "md", "json"] as const).map((format) => ({
-        id: format,
-        label: t(TRANSCRIPT_EXPORT_LABEL_KEYS[format]),
-        onSelect: () => onExportTranscript(format),
-      }));
+      const sources = listTranscriptSources(displaySegments, importMedia);
+      return (["txt", "srt", "md", "json"] as const).flatMap((format) => {
+        if (format !== "srt" || sources.length <= 1)
+          return [
+            {
+              id: format,
+              label: t(TRANSCRIPT_EXPORT_LABEL_KEYS[format]),
+              onSelect: () => onExportTranscript(format),
+            },
+          ];
+        return sources
+          .filter((source) => source.selection)
+          .map((source) => {
+            const name =
+              source.kind === "original"
+                ? t("nimi.originalSource")
+                : `${t("nimi.recordingMedia.recording", { number: source.recordingNumber })} · ${t(source.source === "mic" ? "nimi.recordingMedia.mic" : "nimi.recordingMedia.system")}`;
+            return {
+              id: "srt:" + source.key,
+              label: `${t(TRANSCRIPT_EXPORT_LABEL_KEYS.srt)} · ${name}`,
+              onSelect: () => onExportTranscript("srt", source.selection),
+            };
+          });
+      });
     }
     if (!onExportNote) return [];
     return (["md", "txt"] as const).map((format) => ({
@@ -983,7 +1032,7 @@ export default function NoteEditor({
       label: t(NOTE_EXPORT_LABEL_KEYS[format]),
       onSelect: () => onExportNote(format),
     }));
-  }, [viewMode, onExportTranscript, onExportNote, t]);
+  }, [viewMode, onExportTranscript, onExportNote, displaySegments, importMedia, t]);
 
   return (
     <div className="flex h-full min-h-0">
@@ -1169,6 +1218,9 @@ export default function NoteEditor({
                 {Math.max(1, space.member_count ?? 1)}
               </button>
             )}
+            {importMedia && (
+              <NoteSourceMediaButton noteId={note.id} media={importMedia} locale={locale} />
+            )}
             {isSaving && (
               <span className="inline-flex items-center gap-1 text-xs text-foreground/45 tabular-nums">
                 <Loader2 size={10} className="animate-spin" />
@@ -1265,6 +1317,7 @@ export default function NoteEditor({
             <div className="flex w-full shrink-0 flex-wrap items-center gap-2 @[650px]/note-editor:w-auto">
               {canEditNote && (
                 <NoteRecordControl
+                  noteId={note.id}
                   isRecording={isRecording}
                   isProcessing={isProcessing}
                   disabled={!recordingAllowed}
@@ -1339,6 +1392,7 @@ export default function NoteEditor({
             {viewMode === "transcript" && (hasChatSegments || isRecording) ? (
               isRecording ? (
                 <LiveMeetingTranscriptChat
+                  importMedia={note.note_type === "upload" ? importMedia : undefined}
                   contentClassName={PAGE_CONTENT_WIDTH_CLASS}
                   speakerMappings={speakerMappings}
                   speakerProfiles={speakerProfiles}
@@ -1353,6 +1407,34 @@ export default function NoteEditor({
                   onConfirmSuggestion={handleConfirmSuggestion}
                   onDismissSuggestion={handleDismissSuggestion}
                   onAttachSpeakerEmail={handleAttachSpeakerEmail}
+                />
+              ) : note.note_type === "upload" ? (
+                <ImportedTranscript
+                  className={PAGE_CONTENT_WIDTH_CLASS}
+                  segments={displaySegments}
+                  originalText={
+                    importMedia?.chunks?.map((chunk) => chunk.transcript.text).join("\n") ?? ""
+                  }
+                  originMs={importMedia?.transcriptOriginMs}
+                  media={importMedia}
+                  speakerMappings={speakerMappings}
+                  speakerProfiles={knownSpeakers}
+                  participants={parsedParticipants}
+                  onMapSpeaker={handleMapSpeaker}
+                  onConfirmSuggestion={handleConfirmSuggestion}
+                  onDismissSuggestion={handleDismissSuggestion}
+                  selectedIds={selectedSegmentIds}
+                  onToggleGroup={(ids) =>
+                    setSelectedSegmentIds((previous) => {
+                      const next = new Set(previous);
+                      const clear = ids.every((id) => next.has(id));
+                      for (const id of ids) {
+                        if (clear) next.delete(id);
+                        else next.add(id);
+                      }
+                      return next;
+                    })
+                  }
                 />
               ) : (
                 <MeetingTranscriptChat

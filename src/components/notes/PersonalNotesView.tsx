@@ -240,6 +240,7 @@ export default function PersonalNotesView({
   const [showStructureIntro, setShowStructureIntro] = useState(false);
 
   const isTranscribing = useMeetingRecordingStore((s) => s.isRecording);
+  const isFinalizing = useMeetingRecordingStore((s) => s.isFinalizing);
   const diarizationSessionId = useMeetingRecordingStore((s) => s.diarizationSessionId);
   const recordingNoteId = useMeetingRecordingStore((s) => s.recordingNoteId);
   const sessionDiarizationEnabled = useMeetingRecordingStore((s) => s.sessionDiarizationEnabled);
@@ -600,11 +601,20 @@ export default function PersonalNotesView({
   );
 
   const handleExportTranscript = useCallback(
-    async (format: "txt" | "srt" | "json" | "md") => {
+    async (
+      format: "txt" | "srt" | "json" | "md",
+      source?: import("../../types/electron").NoteTranscriptSource
+    ) => {
       if (!activeNoteId) return;
-      await window.electronAPI.exportTranscript(activeNoteId, format);
+      const result = await window.electronAPI.exportTranscript(activeNoteId, format, source);
+      if (!result.success && result.error)
+        toast({
+          title: t("dictionary.exportFailed"),
+          description: result.error,
+          variant: "destructive",
+        });
     },
-    [activeNoteId]
+    [activeNoteId, toast, t]
   );
 
   useEffect(() => {
@@ -688,8 +698,6 @@ export default function PersonalNotesView({
       transcript: formattedTranscript,
     });
     runAction(action, input, makeContentHash(`${noteContent}\n${rawTranscript}`), {
-      isCloudMode,
-      modelId: effectiveModelId,
       isMeetingNote,
       knownPeople,
       fromSummary,
@@ -756,7 +764,7 @@ export default function PersonalNotesView({
               onContentChange={handleContentChange}
               isSaving={isSaving}
               isRecording={isActiveNoteRecording}
-              isProcessing={false}
+              isProcessing={isFinalizing && recordingNoteId === editorNote.id}
               recordingAllowed={meetingRecordingAllowed}
               onStartRecording={startRecording}
               onStopRecording={stopRecording}

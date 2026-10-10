@@ -2,56 +2,45 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadAudioManager } = require("./harness/audioManager");
 
-for (const streamingCommit of [false, true]) {
-  test(`${streamingCommit ? "uncommitted online" : "offline"} preview stop preserves the complete final recording`, async (t) => {
-    const { window, createManager } = await loadAudioManager(t, {
-      cachePrefix: "openwhispr-preview-finalization-test-",
-      settingsKey: "__previewFinalizationSettings",
-      settings: {
-        useLocalWhisper: true,
-        localTranscriptionProvider: "nvidia",
-        preferredLanguage: "en",
-        allowOpenAIFallback: false,
-      },
-    });
-    const bytes = Uint8Array.from({ length: 4096 }, (_, index) => index % 251);
-    const recording = new Blob([bytes], { type: "audio/webm" });
-    const calls = [];
-    window.electronAPI.stopDictationPreview = async () => {
-      calls.push("stop-preview");
-      return { success: true, streamed: false, text: "incomplete preview" };
-    };
-    window.electronAPI.transcribeLocalParakeet = async (buffer, options) => {
-      calls.push("final-decode");
-      assert.deepEqual(new Uint8Array(buffer), bytes);
-      assert.equal(options.model, "orukeet-v0.1.0");
-      return { success: true, text: "complete recording" };
-    };
-    let finalResult;
-    const manager = createManager({
-      micRecovery: { stop() {} },
-      teardownSpeechGate() {},
-      _batchSegments: [],
-      _receivedAudioData: true,
-      _streamingCommitActive: streamingCommit,
-      recordingStartTime: Date.now() - 2000,
-      _startProcessingPipeline: () => ({}),
-      _shouldAbandonProcessingPipeline: () => false,
-      shouldShowPreviewCleanupState: () => false,
-      getEffectiveSttLanguage: () => "en",
-      processTranscription: async (text) => text,
-      async processAudio(blob, metadata) {
-        assert.strictEqual(blob, recording);
-        assert.equal(metadata.streamedText, undefined);
-        finalResult = await this.processWithLocalParakeet(blob, "orukeet-v0.1.0", metadata);
-      },
-    });
-
-    await manager.finalizeBatchRecording(recording);
-
-    assert.deepEqual(calls, ["stop-preview", "final-decode"]);
-    assert.equal(finalResult.text, "complete recording");
-    assert.equal(finalResult.rawText, "complete recording");
-    assert.strictEqual(manager.lastAudioBlob, recording);
+test("finite preview retirement preserves the complete final recording and actual PCM copy", async (t) => {
+  const { window, createManager } = await loadAudioManager(t, {
+    cachePrefix: "nimi-preview-finalization-",
+    settingsKey: "__nimiPreviewSettings",
+    settings: { preferredLanguage: "en" },
   });
-}
+  const bytes = Uint8Array.from({ length: 4096 }, (_, index) => index % 251);
+  const recording = new Blob([bytes], { type: "audio/webm" });
+  const wav = new Blob([bytes], { type: "audio/wav" });
+  const calls = [];
+  window.electronAPI.stopDictationPreview = async () => {
+    calls.push("native-preview-stop");
+    return { success: true, streamed: false, text: "" };
+  };
+  const manager = createManager({
+    micRecovery: { stop() {} },
+    teardownSpeechGate() {},
+    _batchSegments: [],
+    _receivedAudioData: true,
+    recordingStartTime: Date.now() - 2000,
+    _batchPcmTap: { stop: async () => wav },
+    _nimiPreview: {
+      close: () => {
+        calls.push("cancel-preview-job");
+      },
+    },
+    _startProcessingPipeline: () => ({}),
+    _shouldAbandonProcessingPipeline: () => false,
+    shouldShowPreviewCleanupState: () => false,
+    async processAudio(blob, metadata) {
+      calls.push("full-final-input");
+      assert.equal(blob, recording);
+      assert.equal(metadata.rawWav, wav);
+      assert.equal(metadata.streamedText, undefined);
+      assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), bytes);
+    },
+  });
+  await manager.finalizeBatchRecording(recording);
+  assert.deepEqual(calls, ["cancel-preview-job", "native-preview-stop", "full-final-input"]);
+  assert.equal(manager._nimiPreview, null);
+  assert.equal(manager.lastAudioBlob, recording);
+});

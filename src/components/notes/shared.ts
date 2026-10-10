@@ -69,6 +69,7 @@ const TRANSCRIPTION_ERROR_KEYS: Record<string, string> = {
 // thrown error — OpenWhispr Cloud rethrows it through withSessionRefresh — so
 // every call site resolves the key from whichever shape it is holding.
 export function transcriptionErrorKey(failure: unknown): string | undefined {
+  if ((failure as { status?: string } | null)?.status === "no-speech") return "noSpeechDetected";
   const code = (failure as { code?: string } | null | undefined)?.code;
   return code ? TRANSCRIPTION_ERROR_KEYS[code] : undefined;
 }

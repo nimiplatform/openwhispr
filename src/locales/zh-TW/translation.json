@@ -690,6 +690,9 @@
       "retryTranscription": "重新轉錄",
       "retrying": "正在重新轉錄…",
       "retrySuccess": "轉錄已更新",
+      "recordedFailureReason": "已記錄的失敗原因：{{reason}}",
+      "retryNotificationWarning": "轉錄已儲存，部分視窗未能收到通知。",
+      "retryEditingWarning": "轉錄已儲存，部分文字處理未完成。",
       "retryError": "重新轉錄失敗",
       "audioNotFound": "找不到音訊檔案或檔案已過期",
       "noAiProcessing": "此轉錄未套用 AI 處理",
@@ -902,7 +905,8 @@
         "agentUnavailable": "助理無法使用",
         "screenContextSkipped": "已略過螢幕內容",
         "dailyLimitReached": "已達每日上限",
-        "providerRateLimited": "服務商速率限制"
+        "providerRateLimited": "服務商速率限制",
+        "cancellationUnconfirmed": "取消尚未確認"
       },
       "fallback": {
         "title": "備援模式",
@@ -984,7 +988,8 @@
       },
       "pasteFailed": {
         "title": "無法自動貼上"
-      }
+      },
+      "dictionaryPromptTooLong": "聽寫詞典內容過長，請減少項目後再試。"
     },
     "clipboard": {
       "pasteFailed": {
@@ -3073,9 +3078,9 @@
       "transcriptionFailed": "轉錄失敗",
       "errorOccurred": "發生錯誤",
       "noSpeechDetected": "未在此音訊中偵測到語音。",
-      "noProviderTitle": "尚未設定轉錄服務供應商",
-      "noProviderDescription": "新增 API Key 或下載本機模型以開始轉錄。",
-      "noProviderAction": "開啟轉錄設定",
+      "noProviderTitle": "Nimi 轉寫暫不可用",
+      "noProviderDescription": "請在 Nimi 中選擇可用的語音轉文字模型。如果工作階段已失效，請登入 Nimi 後重試。",
+      "noProviderAction": "開啟 Nimi 模型設定",
       "fileTooLarge": "此檔案超過 500 MB 的大小限制。",
       "largeFileNote": "大型檔案將被分割並平行轉錄。",
       "chunkProgress": "正在轉錄第 {{completed}} 部分，共 {{total}} 部分...",
@@ -3149,7 +3154,11 @@
       "systemAudioQuiet": {
         "title": "會議音訊已靜默",
         "description": "已有幾分鐘未偵測到任何人聲。如果通話仍在進行，請檢查您的聲音輸出裝置。"
-      }
+      },
+      "finishing": "正在完成轉寫並儲存…",
+      "cancelFinishing": "停止處理，保留錄音",
+      "saved": "轉寫和錄音已儲存",
+      "canceled": "已停止處理，錄音已保留"
     },
     "meetingPill": {
       "returnToNote": "返回到錄音",
@@ -3238,7 +3247,7 @@
         }
       },
       "errors": {
-        "noModel": "未選擇 AI 模型。請在設定中進行配置。",
+        "noModel": "沒有可用的 Nimi 文字模型，請在 Nimi 模型設定中選擇。",
         "actionFailed": "操作失敗",
         "noEndpoint": "未設定自架伺服器 URL。請在設定中進行配置。",
         "outputTruncated": "AI 模型在完成之前就用完了輸出空間，因此筆記維持不變。",
@@ -4851,6 +4860,68 @@
     "details": {
       "provider": "服務商",
       "requestId": "請求 ID"
+    }
+  },
+  "nimi": {
+    "transcriptionSpeakerOptionsUnsupported": "此次轉錄請求遭到拒絕。本工作要求說話人分段。請檢查 Nimi 設定、音訊格式、語言、詞典及其他請求選項。已儲存的錄音可從筆記的「原始檔案」重新開啟。原因：{{reason}}",
+    "transcriptionTimingUnsupported": "此次轉錄請求遭到拒絕。本工作要求時間資訊。請檢查 Nimi 設定、音訊格式、語言、詞典及其他請求選項，再重試已儲存的錄音。原因：{{reason}}",
+    "meetingModelRequirements": "會議需要真實的逐字時間資訊。若要區分說話人，請在 Nimi 中選擇同時支援說話人分離的語音模型。模型可用不代表支援這些選項。",
+    "sessionConnectionTitle": "Nimi 連線無法使用",
+    "sessionConnectionUnavailable": "應用程式未能建立 Nimi 連線。請在 Nimi 中檢查此應用程式後重試。原因：{{reason}}",
+    "sessionScopeChanged": "準備工作時帳號已變更。請重新開始工作。",
+    "checkConnection": "檢查連線",
+    "sessionRecordingRecovery": "如已保留錄音，可開啟首頁，在該錄音的更多操作中選擇重新轉錄。",
+    "pasteNotDelivered": "文字未能送達",
+    "pasteRecovery": "請返回原編輯器重試，或手動貼上已複製的文字。",
+    "pasteRecoveryCopyFailed": "複製到剪貼簿也失敗了。請使用下方文字複製並貼上結果。",
+    "startupUnavailable": "此開發登記不支援開機自動啟動。請從 Nimi 開啟此應用程式。",
+    "desktopNotReady": "請先啟動 Nimi Desktop 並完成登入，然後重試。",
+    "modelsTitle": "Nimi 模型",
+    "modelsDescription": "在 Nimi 中選擇語音、文字和向量模型。憑證由 Nimi 保管。",
+    "signInRequired": "請在 Nimi Desktop 登入後設定和使用 AI。裝置與快捷鍵設定可以先完成。",
+    "openNimi": "開啟 Nimi",
+    "retry": "重試",
+    "deferMicrophone": "先使用筆記，稍後啟用麥克風",
+    "microphoneRequired": "錄音需要麥克風授權，筆記可以先使用。",
+    "microphoneSettings": "麥克風設定",
+    "speakerLabelsPending": "說話人標籤仍在接入 Nimi，無標籤轉寫可以獨立使用。",
+    "originalSource": "原始檔案",
+    "searchSemantic": "語意檢索",
+    "searchKeyword": "關鍵字檢索",
+    "searchScope": "（{{space}}）",
+    "searchEmpty": "未找到與「{{query}}」相關的筆記{{scope}}（{{method}}）",
+    "searchResults": "找到 {{count}} 則與「{{query}}」相關的筆記{{scope}}（{{method}}）",
+    "searchUnavailable": "搜尋暫時無法使用，請重試。",
+    "previewUnavailableTitle": "即時預覽已停止",
+    "previewUnavailableDescription": "錄音仍在繼續。結束後會透過 Nimi 嘗試轉寫完整錄音。",
+    "speakerRepresentations": "說話人聲紋",
+    "speakerMatchingIncomplete": "部分聲音無法確認比對，原始說話人區間已儲存。請手動核對標籤，或檢查 Nimi 中的聲紋模型。",
+    "microphoneUnknown": "麥克風權限尚未確認，請檢查系統設定；筆記可以先使用。",
+    "restartTitle": "重新啟動應用",
+    "restartDescription": "Nimi 將重新開啟此應用。請先停止錄音並完成目前的處理。",
+    "restartBusy": "請先停止錄音並完成目前的處理，再重新啟動應用。",
+    "businessAIManaged": "尚無法確認 Nimi 符合工作區的 AI 限制。此受管帳號暫不可執行 AI；筆記和非 AI 功能仍可使用。",
+    "updatesManaged": "應用更新由 Nimi 管理。此開發登記沒有安裝套件更新。",
+    "appDataTitle": "應用資料",
+    "appDataDescription": "管理此應用的設定、筆記、歷史、錄音和搜尋索引。",
+    "appDataReset": "刪除此應用的本地設定、筆記、歷史、錄音和搜尋索引；保留 Nimi 管理的模型與憑據。",
+    "updatesOpen": "開啟 Nimi 應用管理",
+    "businessAIUnresolved": "工作區策略尚未解析。請在業務帳號確認後重試；筆記仍可使用。",
+    "recordingMedia": {
+      "recording": "錄音 {{number}}",
+      "mic": "麥克風",
+      "system": "系統音訊",
+      "seconds": "{{seconds}} 秒",
+      "status": {
+        "processing": "處理中",
+        "completed": "已完成",
+        "canceled": "已取消",
+        "failed": "失敗",
+        "unknown": "狀態未知"
+      },
+      "openFailed": "無法定位媒體檔案",
+      "checkFile": "請檢查原始檔案是否仍儲存在本機。",
+      "unavailable": "暫無可選擇的原始媒體。"
     }
   }
 }

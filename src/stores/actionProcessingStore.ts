@@ -3,14 +3,13 @@ import { NOTE_OUTPUT_MAX_TOKENS, NOTHING_TO_SUMMARIZE } from "../helpers/builtin
 import { stripThinkingTags } from "../helpers/stripThinking";
 import { compileSummaryActionPrompt, compileTemplatePrompt } from "../helpers/templatePrompts";
 import reasoningService from "../services/ReasoningService";
-import { getSettings, selectResolvedNoteFormatting } from "./settingsStore";
+import { getSettings } from "./settingsStore";
+import { getNimiClient } from "../services/nimiClient";
 import { appendDictionarySuffix } from "../config/prompts";
 import { generateNoteTitle } from "../utils/generateTitle";
-import { buildNoteFormattingOverrides } from "../helpers/noteFormattingOverrides";
 import { tagActionItemOwners, type MentionPerson } from "../utils/mentionMarkdown";
 import type { ActionItem, NoteItem } from "../types/electron";
 import { estimateNoteTokens, planNoteChunks, splitChunkInHalf } from "../helpers/noteChunking";
-import type { LocalInferenceError } from "../utils/localInferenceError";
 import type { TechnicalErrorDetailsData } from "../components/ui/useToast";
 import type { ReasoningConfig } from "../services/BaseReasoningService";
 import {
@@ -31,16 +30,6 @@ const NOTE_ERROR_KEYS: Record<string, string> = {
 const PART_NOTES_MAX_TOKENS = 2048;
 // Below this a part's notes could not hold the specifics of an hour of speech.
 const MIN_PART_NOTES_TOKENS = 512;
-// What one "## Notes from part i of N" heading and its separator cost the merge.
-const PART_HEADING_TOKENS = 16;
-
-// Mirrors CONTEXT_RESERVE_TOKENS in modelManagerBridge: slack the main process
-// keeps on top of the output reservation when budgeting each part.
-const CONTEXT_RESERVE_TOKENS = 512;
-// Parts are packed to this share of the room left after the fixed pieces, so
-// the exact tokenizer can run a little hotter than the estimate without a part
-// spilling over the window.
-const CHUNK_FILL_FRACTION = 0.85;
 // Below this a part would hold a minute or two of speech; refuse instead.
 const MIN_CHUNK_BUDGET_TOKENS = 1024;
 // A part is never larger than this even when the window allows more. Small
@@ -106,6 +95,7 @@ interface ActionProcessingStoreState {
 // by a new run on the same note and revive the run the user just cancelled.
 // The id also tags the run's local requests so a cancel can abort them.
 const activeRuns = new Map<number, string>();
+const actionControllers = new Map<number, AbortController>();
 const processingFlags = new Map<number, boolean>();
 const successTimers = new Map<number, NodeJS.Timeout>();
 
@@ -166,33 +156,22 @@ The material includes ordered working notes from consecutive parts of the user's
 interface EnhancementRun {
   noteId: number;
   noteContent: string;
-  modelId: string;
   systemPrompt: string;
   requestConfig: ReasoningConfig;
   options: RunActionOptions;
   isCancelled: () => boolean;
 }
 
-interface LocalContextBudget {
-  maxContextTokens: number;
-  modelName: string;
-}
-
 const isContextTooLarge = (error: unknown): boolean =>
-  (error as { code?: string } | null)?.code === "CONTEXT_TOO_LARGE";
+  ["CONTEXT_TOO_LARGE", "AI_INPUT_LIMIT_EXCEEDED", "ai-input-limit-exceeded"].includes(
+    String(
+      (error as { reasonCode?: string; code?: string } | null)?.reasonCode ??
+        (error as { code?: string } | null)?.code
+    )
+  );
 
 const hasTranscript = (material: NoteMaterial | undefined): material is NoteMaterial =>
   (material?.transcript.trim().length ?? 0) > 0;
-
-async function readLocalContextBudget(modelId: string): Promise<LocalContextBudget | null> {
-  try {
-    const result = await window.electronAPI?.getLocalContextBudget?.(modelId);
-    if (!result?.success || !(result.maxContextTokens && result.maxContextTokens > 0)) return null;
-    return { maxContextTokens: result.maxContextTokens, modelName: result.modelName || modelId };
-  } catch {
-    return null;
-  }
-}
 
 const emptyReplyError = () =>
   Object.assign(new Error("Model returned no text"), { messageKey: "notes.actions.emptyReply" });
@@ -219,211 +198,110 @@ function isNothingToSummarizeReply(reply: string): boolean {
   return lead.length <= 200 && !/^(?:#|[-*+]\s|\d+[.)]\s)/m.test(lead);
 }
 
-/** The translated refusal from #2142, for material no amount of splitting can fit. */
-function tooLongForModel(modelName: string): LocalInferenceError {
-  const error: LocalInferenceError = new Error(
-    `Material is too long for ${modelName} on this computer`
-  );
-  error.code = "CONTEXT_TOO_LARGE";
-  error.messageKey = "models.errors.contextTooLargeGeneric";
-  error.messageParams = { model: modelName };
-  return error;
-}
-
 /**
  * One request on every route; parts-then-merge only when a local model refuses
  * a recording as too large for its window (#2142).
  */
 async function runEnhancement(run: EnhancementRun): Promise<string> {
-  let refusal: unknown;
   try {
-    // The main-process preflight measures the prompt exactly, so a conservative
-    // renderer estimate never replaces a request the model can serve.
-    return await reasoningService.processText(
-      run.noteContent,
-      run.modelId,
-      null,
-      run.requestConfig
-    );
+    return await reasoningService.processText(run.noteContent, "", null, run.requestConfig);
   } catch (error) {
-    if (!isContextTooLarge(error)) throw error;
-    refusal = error;
+    if (!isContextTooLarge(error) || !hasTranscript(run.options.material)) throw error;
+    if (run.isCancelled()) throw new Error("cancelled");
+    return runInParts(run, run.options.material);
   }
-  // Only a transcript is split: the action's intent is unknown here, and an
-  // edit-style action applied to a condensed plain note would silently replace
-  // the user's text with a digest of it.
-  const material = run.options.material;
-  if (!hasTranscript(material)) throw refusal;
-  // Only a local model refuses as CONTEXT_TOO_LARGE, so the refusal identifies
-  // the route however note formatting reached it (its own mode or cleanup's).
-  const budget = await readLocalContextBudget(run.modelId);
-  if (!budget) throw refusal;
-  if (run.isCancelled()) throw new Error("cancelled");
-  return runInParts(run, budget, material);
 }
 
-async function runInParts(
-  run: EnhancementRun,
-  budget: LocalContextBudget,
-  material: NoteMaterial
-): Promise<string> {
+async function runInParts(run: EnhancementRun, material: NoteMaterial): Promise<string> {
   const { transcript, meetingContext: context, notes: manualNotes } = material;
-  // Only a diarised transcript carries "Label:" lines; a live recording's text
-  // is one plain paragraph whose first colon is not a speaker.
-  const hasSpeakerLabels = run.options.isMeetingNote === true;
-  const mergeSystemPrompt = run.systemPrompt + MERGE_ADDENDUM;
-
-  // The final pass carries the manual notes, the context and every part's notes
-  // at once, so each part's allowance is its share of the room left there. Then
-  // the merge fits by construction and a verbose model costs a clipped part,
-  // not a round of consolidation.
-  const allowanceFor = (sections: number): number => {
-    const room =
-      budget.maxContextTokens -
-      estimateNoteTokens(manualNotes) -
-      estimateNoteTokens(context) -
-      estimateNoteTokens(mergeSystemPrompt) -
-      NOTE_OUTPUT_MAX_TOKENS -
-      CONTEXT_RESERVE_TOKENS -
-      sections * PART_HEADING_TOKENS;
-    return Math.min(NOTE_OUTPUT_MAX_TOKENS, Math.floor(room / sections));
-  };
-
-  // Parts are planned against the largest allowance so they stay small enough
-  // for the exact tokenizer to accept them whatever share they end up with.
-  const fixedTokens =
-    estimateNoteTokens(partNotesPrompt(PART_NOTES_MAX_TOKENS / 2)) +
-    estimateNoteTokens(context) +
-    PART_NOTES_MAX_TOKENS +
-    CONTEXT_RESERVE_TOKENS;
-  const chunkBudget = Math.min(
-    MAX_PART_TOKENS,
-    Math.floor((budget.maxContextTokens - fixedTokens) * CHUNK_FILL_FRACTION)
-  );
-  if (chunkBudget < MIN_CHUNK_BUDGET_TOKENS) throw tooLongForModel(budget.modelName);
-
-  const chunks = planNoteChunks(transcript, chunkBudget, {
-    preserveSpeakerLabels: hasSpeakerLabels,
-  });
-  if (chunks.length === 0) throw tooLongForModel(budget.modelName);
-  const partMaxTokens = allowanceFor(chunks.length);
-  if (partMaxTokens < MIN_PART_NOTES_TOKENS) throw tooLongForModel(budget.modelName);
-  const total = chunks.length + 1;
-
+  const preserveSpeakerLabels = run.options.isMeetingNote === true;
+  const chunks = planNoteChunks(transcript, MAX_PART_TOKENS, { preserveSpeakerLabels });
+  if (!chunks.length) throw emptyReplyError();
   const summarisePart = async (
     text: string,
     heading: string,
-    maxTokens: number,
-    preserveSpeakerLabels = false,
+    outputTokens = PART_NOTES_MAX_TOKENS,
     depth = 0
   ): Promise<string> => {
     if (run.isCancelled()) throw new Error("cancelled");
-    const content = [context, `## ${heading}\n${text}`].filter(Boolean).join("\n\n");
-    let notes: string;
     try {
-      notes = await reasoningService.processText(content, run.modelId, null, {
-        ...run.requestConfig,
-        systemPrompt: partNotesPrompt(Math.floor(maxTokens / 2)),
-        maxTokens,
-        // Working notes are scaffolding: reasoning would spend the part's whole
-        // output budget before a line of them is written.
-        disableThinking: true,
-        // A reply that fills its allowance is kept; the final pass is where a
-        // clipped part costs the least.
-        refuseClippedByWindow: false,
-      });
+      const notes = await reasoningService.processText(
+        [context, `## ${heading}\n${text}`].filter(Boolean).join("\n\n"),
+        "",
+        null,
+        {
+          ...run.requestConfig,
+          systemPrompt: partNotesPrompt(Math.floor(outputTokens / 2)),
+          maxTokens: outputTokens,
+          disableThinking: true,
+          refuseClippedByWindow: false,
+          requireCompleteOutput: true,
+        }
+      );
+      if (run.isCancelled()) throw new Error("cancelled");
+      if (!notes.trim()) throw emptyReplyError();
+      return notes;
     } catch (error) {
-      // The exact tokenizer refused the prompt itself: halve the material and
-      // share the allowance so the merge still fits.
       if (!isContextTooLarge(error) || depth >= MAX_SPLIT_DEPTH) throw error;
       const halves = splitChunkInHalf(text, { preserveSpeakerLabels });
-      if (!halves) throw error;
-      const halfTokens = Math.ceil(maxTokens / 2);
-      const [first, second] = halves;
-      const firstNotes = await summarisePart(
-        first,
-        heading,
-        halfTokens,
-        preserveSpeakerLabels,
-        depth + 1
-      );
-      const secondNotes = await summarisePart(
-        second,
-        heading,
-        halfTokens,
-        preserveSpeakerLabels,
-        depth + 1
-      );
-      return `${firstNotes}\n\n${secondNotes}`;
+      if (halves && estimateNoteTokens(text) > MIN_CHUNK_BUDGET_TOKENS) {
+        const first = await summarisePart(halves[0], heading, outputTokens, depth + 1);
+        const second = await summarisePart(halves[1], heading, outputTokens, depth + 1);
+        return first + "\n\n" + second;
+      }
+      if (outputTokens > MIN_PART_NOTES_TOKENS) {
+        return summarisePart(
+          text,
+          heading,
+          Math.max(MIN_PART_NOTES_TOKENS, Math.floor(outputTokens / 2)),
+          depth + 1
+        );
+      }
+      throw error;
     }
-    // A blank part would be merged as an empty section and its hour of the
-    // meeting would vanish from the notes without a word.
-    if (notes.trim().length === 0) throw emptyReplyError();
-    return notes;
   };
-
-  const partNotes: string[] = [];
-  for (let index = 0; index < chunks.length; index += 1) {
-    if (run.isCancelled()) throw new Error("cancelled");
-    setNoteState(run.noteId, { progress: { step: index + 1, total } });
-    partNotes.push(
-      await summarisePart(
-        chunks[index],
-        `Meeting Transcript (part ${index + 1} of ${chunks.length})`,
-        partMaxTokens,
-        hasSpeakerLabels
-      )
-    );
+  let sections: string[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    setNoteState(run.noteId, { progress: { step: i + 1, total: chunks.length } });
+    sections.push(await summarisePart(chunks[i], `Part ${i + 1} of ${chunks.length}`));
   }
-
-  let sections = partNotes;
-  for (let round = 0; round <= MAX_REDUCE_ROUNDS; round += 1) {
+  let refusal: unknown;
+  for (let round = 0; round <= MAX_REDUCE_ROUNDS; round++) {
     if (run.isCancelled()) throw new Error("cancelled");
-    setNoteState(run.noteId, { progress: { step: total, total } });
-    const mergeContent = [
+    const content = [
       manualNotes,
       context,
-      ...sections.map(
-        (notes, index) => `## Notes from part ${index + 1} of ${sections.length}\n${notes}`
-      ),
+      ...sections.map((notes, index) => `## Notes from part ${index + 1}\n${notes}`),
     ]
       .filter(Boolean)
       .join("\n\n");
     try {
-      return await reasoningService.processText(mergeContent, run.modelId, null, {
+      return await reasoningService.processText(content, "", null, {
         ...run.requestConfig,
-        systemPrompt: mergeSystemPrompt,
-        // There is no better route left once the note is in parts: a clipped
-        // merge is saved as it was before #2155, not refused after minutes.
+        systemPrompt: run.systemPrompt + MERGE_ADDENDUM,
         refuseClippedByWindow: false,
+        requireCompleteOutput: true,
       });
     } catch (error) {
       if (!isContextTooLarge(error)) throw error;
+      refusal = error;
     }
-    if (round === MAX_REDUCE_ROUNDS) break;
-    // The exact tokenizer still found too many part-notes for one pass:
-    // consolidate neighbouring parts and go again.
-    const groups = planNoteChunks(sections.join("\n\n"), chunkBudget);
-    const groupMaxTokens = allowanceFor(groups.length);
+    if (round === MAX_REDUCE_ROUNDS || sections.length < 2) break;
     const consolidated: string[] = [];
-    for (let index = 0; index < groups.length; index += 1) {
-      if (run.isCancelled()) throw new Error("cancelled");
+    for (let index = 0; index < sections.length; index += 2) {
       consolidated.push(
         await summarisePart(
-          groups[index],
-          `Working notes (part ${index + 1} of ${groups.length})`,
-          groupMaxTokens
+          sections.slice(index, index + 2).join("\n\n"),
+          "Consolidated working notes"
         )
       );
     }
     sections = consolidated;
   }
-  throw tooLongForModel(budget.modelName);
+  throw refusal;
 }
 
 export interface RunActionOptions {
-  isCloudMode: boolean;
-  modelId: string;
   isMeetingNote?: boolean;
   /** Opt-in so enhancement never renames a note the user has titled. */
   allowTitleGeneration?: boolean;
@@ -455,28 +333,24 @@ export function runBackgroundAction(
 ): void {
   if (processingFlags.get(noteId)) return;
 
-  const modelId = options.modelId;
-  if (!modelId && !options.isCloudMode) {
-    pushErrorEvent({ noteId, message: labels.noModel });
-    return;
-  }
-
   const settings = getSettings();
-  const noteFormatting = selectResolvedNoteFormatting(settings);
-  // A self-hosted config without a URL would fall through to a cloud provider.
-  if (!options.isCloudMode && noteFormatting.mode === "self-hosted" && !noteFormatting.remoteUrl) {
-    pushErrorEvent({ noteId, message: labels.noEndpoint });
-    return;
-  }
 
   const runId = crypto.randomUUID();
+  const controller = new AbortController();
+  actionControllers.set(noteId, controller);
   activeRuns.set(noteId, runId);
-  const isCancelled = () => activeRuns.get(noteId) !== runId;
+  const isCancelled = () => activeRuns.get(noteId) !== runId || controller.signal.aborted;
   processingFlags.set(noteId, true);
   setNoteState(noteId, { status: "processing", actionName: action.name, progress: null });
 
   (async () => {
     try {
+      const selection = (await getNimiClient().aiConfig.get()).effectiveSelections.find(
+        (value) => value.capabilityContract === "text.generate"
+      );
+      if (isCancelled()) return;
+      if (selection?.state !== "ready")
+        throw Object.assign(new Error(labels.noModel), { settingsTarget: "llms" });
       // Only summary actions reach the runner; chat actions run in the note chat.
       const editsSummary = action.kind === "action";
       // A summary action with no summary yet writes a first one, like a template.
@@ -487,7 +361,6 @@ export function runBackgroundAction(
             isMeetingNote: options.isMeetingNote,
           })
         : compileTemplatePrompt(action, { isMeetingNote: options.isMeetingNote });
-      const providerOverrides = buildNoteFormattingOverrides(noteFormatting, options.isCloudMode);
       const systemPrompt = appendDictionarySuffix(
         instructions,
         options.isMeetingNote ? settings.customDictionary : undefined,
@@ -511,12 +384,12 @@ export function runBackgroundAction(
         // refuses a truncated reply for every request).
         ...(rewritesSummary && { requireCompleteOutput: true }),
         requestId: runId,
-        ...providerOverrides,
+        inferenceScope: "noteFormatting",
+        signal: controller.signal,
       };
       const enhanced = await runEnhancement({
         noteId,
         noteContent,
-        modelId,
         systemPrompt,
         requestConfig,
         options,
@@ -537,7 +410,7 @@ export function runBackgroundAction(
 
       let title: string | undefined;
       if (!editsSummary && options.allowTitleGeneration && getSettings().autoGenerateNoteTitle) {
-        const generated = await generateNoteTitle(enhanced, modelId, providerOverrides);
+        const generated = await generateNoteTitle(enhanced, "", { signal: controller.signal });
         if (generated) title = generated;
       }
 
@@ -608,6 +481,7 @@ export function runBackgroundAction(
       });
     } finally {
       if (activeRuns.get(noteId) === runId) activeRuns.delete(noteId);
+      if (actionControllers.get(noteId) === controller) actionControllers.delete(noteId);
     }
   })();
 }
@@ -617,8 +491,8 @@ export function runBackgroundAction(
  * local model slot for minutes. Other routes finish and are discarded.
  */
 export function cancelAction(noteId: number): void {
-  const runId = activeRuns.get(noteId);
-  if (runId) void window.electronAPI?.cancelLocalReasoning?.(runId);
+  actionControllers.get(noteId)?.abort();
+  actionControllers.delete(noteId);
   activeRuns.delete(noteId);
   processingFlags.set(noteId, false);
   const timer = successTimers.get(noteId);

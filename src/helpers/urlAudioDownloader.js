@@ -4,6 +4,7 @@ const dns = require("dns");
 const { isIP } = require("net");
 // Namespaced (not destructured) so tests can monkeypatch childProcess.spawn.
 const childProcess = require("child_process");
+const { mediaHelperEnvironment } = require("./mediaHelperEnvironment");
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
@@ -425,7 +426,10 @@ function maybeUpdateYtDlp({ force, abortSignal, timeoutMs } = {}) {
       try {
         // Nightly: upstream calls stable "prone to external breakage"; the updater
         // self-verifies against the release's SHA2-256SUMS.
-        child = childProcess.spawn(cacheBinary, ["--update-to", "nightly"], { windowsHide: true });
+        child = childProcess.spawn(cacheBinary, ["--update-to", "nightly"], {
+          windowsHide: true,
+          env: mediaHelperEnvironment(),
+        });
       } catch (e) {
         ytDlpUpdateInFlight = false;
         debugLogger.warn("yt-dlp self-update failed to start", { error: e.message });
@@ -590,7 +594,7 @@ function assertPublicHost(hostname) {
 function jsRuntimeSpawnConfig() {
   return {
     args: ["--js-runtimes", `node:${process.execPath}`],
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    env: { ...mediaHelperEnvironment(), ELECTRON_RUN_AS_NODE: "1" },
   };
 }
 
@@ -602,6 +606,7 @@ function killYtDlpTree(child, signal) {
     try {
       childProcess.spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
         windowsHide: true,
+        env: mediaHelperEnvironment(),
       });
       return;
     } catch {}

@@ -128,7 +128,9 @@ class WindowManager {
     });
   }
 
-  async createMainWindow() {
+  async createMainWindow({ sessionRestore } = {}) {
+    if (this.isQuitting) return;
+    this._sessionMainWindowPresentation = sessionRestore;
     const cursorPos = screen.getCursorScreenPoint();
     const display = screen.getDisplayNearestPoint(cursorPos);
     const position = WindowPositionUtil.getMainWindowPosition(
@@ -182,7 +184,9 @@ class WindowManager {
     });
 
     await this.loadMainWindow();
+    if (this.isQuitting || !this.mainWindow || this.mainWindow.isDestroyed()) return;
     await this.initializeHotkey();
+    if (this.isQuitting || !this.mainWindow || this.mainWindow.isDestroyed()) return;
     this.dragManager.setTargetWindow(this.mainWindow);
     MenuManager.setupMainMenu(() => this.openSettings());
   }
@@ -1451,7 +1455,9 @@ class WindowManager {
     });
   }
 
-  async createControlPanelWindow() {
+  async createControlPanelWindow({ sessionRestore } = {}) {
+    if (this.isQuitting) return;
+    this._sessionControlPanelPresentation = sessionRestore;
     if (this.controlPanelWindow && !this.controlPanelWindow.isDestroyed()) {
       if (this.controlPanelWindow.isMinimized()) {
         this.controlPanelWindow.restore();
@@ -1746,7 +1752,10 @@ class WindowManager {
     this.sendCancelDictation();
     this.hideDictationPanel();
     this._onboardingActive = false;
-    if (!this._floatingIconAutoHide) this.showDictationPanel();
+    const restoredMain = this._sessionMainWindowPresentation;
+    this._sessionMainWindowPresentation = undefined;
+    if (restoredMain ? restoredMain.visible : !this._floatingIconAutoHide)
+      this.showDictationPanel({ focus: restoredMain?.focused === true });
     return true;
   }
 
@@ -1798,14 +1807,21 @@ class WindowManager {
   }
 
   _showControlPanel() {
+    if (this.isQuitting) return;
     const win = this.controlPanelWindow;
     if (!win || win.isDestroyed()) return;
     // Cancel the backstop either way: once the window has been shown on purpose,
     // a later timer firing could pull it back out of the tray.
     this._clearControlPanelVisibilityTimer();
+    const restored = this._sessionControlPanelPresentation;
+    if (restored && !restored.visible) return;
     if (win.isVisible()) return;
-    win.show();
-    win.focus();
+    if (restored?.minimized) win.minimize();
+    else if (restored && !restored.focused) win.showInactive();
+    else {
+      win.show();
+      win.focus();
+    }
     dockManager.setControlPanelVisible(true);
   }
 

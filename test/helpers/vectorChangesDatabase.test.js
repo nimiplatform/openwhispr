@@ -21,7 +21,7 @@ function createDatabase(t, { migrate = true, filename = ":memory:" } = {}) {
   });
   sqlite.exec(`
     CREATE TABLE IF NOT EXISTS notes (
-      id INTEGER PRIMARY KEY, title TEXT, content TEXT, enhanced_content TEXT,
+      id INTEGER PRIMARY KEY, title TEXT, content TEXT, enhanced_content TEXT, transcript TEXT,
       space_id INTEGER, folder_id INTEGER, deleted_at TEXT, account_id TEXT,
       updated_at TEXT
     );
@@ -37,7 +37,11 @@ function createDatabase(t, { migrate = true, filename = ":memory:" } = {}) {
       throw error;
     }
   };
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS spaces (id INTEGER PRIMARY KEY, kind TEXT); CREATE TABLE IF NOT EXISTS space_accounts (space_id INTEGER, account_id TEXT);"
+  );
   const manager = Object.create(DatabaseManager.prototype);
+  manager.activeAccountId = null;
   manager.db = sqlite;
   if (migrate) manager._initVectorChangeJournal();
   return manager;
@@ -72,6 +76,7 @@ test("vector journal tracks raw insert, indexed field changes, and physical dele
     ["title", "Renamed"],
     ["content", "Cloud edit"],
     ["enhanced_content", "Enhanced"],
+    ["transcript", '[{"text":"new spoken words"}]'],
     ["space_id", 2],
     ["folder_id", 3],
     ["deleted_at", "2026-09-21"],
@@ -148,14 +153,18 @@ test("full reindex refreshes revisions and preserves deletion tombstones", (t) =
   );
 });
 
-test("indexing reads current notes across accounts including soft deletion", (t) => {
+test("indexing reads only the active business scope and retains its soft deletion", (t) => {
   const manager = createDatabase(t);
   manager.activeAccountId = "first-account";
   manager.db.exec(
     "INSERT INTO notes (id, title, account_id, deleted_at) VALUES (1, 'Other', 'other-account', '2026-09-21')"
   );
-  const note = manager.getNoteForVectorIndex(1);
-  assert.equal(note.title, "Other");
+  assert.equal(manager.getNoteForVectorIndex(1), null);
+  manager.db.exec(
+    "INSERT INTO notes (id, title, account_id, deleted_at) VALUES (2, 'Own', 'first-account', '2026-09-21')"
+  );
+  const note = manager.getNoteForVectorIndex(2);
+  assert.equal(note.title, "Own");
   assert.equal(note.deleted_at, "2026-09-21");
 });
 

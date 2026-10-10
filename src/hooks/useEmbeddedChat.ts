@@ -108,9 +108,7 @@ export function useEmbeddedChat({
     noteContext,
     allowConnectors: true,
     noteMeeting,
-    onStreamComplete: (_id, content, toolCalls) => {
-      persistence.saveAssistantMessage(content, toolCalls);
-    },
+    onStreamComplete: (_id, content, toolCalls, nimiTranscript) => persistence.saveAssistantMessage(content, toolCalls, nimiTranscript),
   });
 
   const fetchNoteConversations = useCallback(async () => {

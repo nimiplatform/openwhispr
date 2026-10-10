@@ -52,3 +52,19 @@ test("a discarded take carries its recording time past the state reset", async (
 
   assert.equal(snapshot.analyticsOccurredAt, "2026-04-01T09:00:00.000Z");
 });
+
+test("local history disabled releases captured audio without writing history or audio", async (t) => {
+  const { AudioManager, window, setSettings } = await loadManagerClass(t);
+  setSettings({ dataRetentionEnabled: false, audioRetentionDays: 30 });
+  window.electronAPI.saveTranscription = async () =>
+    assert.fail("disabled history cannot save a row");
+  window.electronAPI.saveTranscriptionAudio = async () =>
+    assert.fail("disabled history cannot save audio");
+  const manager = Object.assign(Object.create(AudioManager.prototype), {
+    lastAudioBlob: new Blob(["declared capture"], { type: "audio/webm" }),
+    lastAudioMetadata: { durationMs: 1000 },
+  });
+  assert.equal(await manager.saveTranscription("source result", "source result"), true);
+  assert.equal(manager.lastAudioBlob, null);
+  assert.equal(manager.lastAudioMetadata, null);
+});

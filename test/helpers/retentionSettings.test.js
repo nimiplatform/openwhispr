@@ -102,6 +102,7 @@ test("only the main renderer can replace process-global retention settings", () 
 });
 
 test("no sweep runs before the renderer has synced the persisted settings", () => {
+  require("./harness/electronStub").installElectronStub();
   const IPCHandlers = require("../../src/helpers/ipcHandlers");
   const sweeps = [];
   const context = {

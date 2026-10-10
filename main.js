@@ -2,6 +2,22 @@
 // late — the flag has to come from a relaunch.
 const { XWAYLAND_FLAG, shouldForceXWayland } = require("./src/helpers/xwayland");
 const { createHotkeyRepeatGate } = require("./src/helpers/hotkeyRepeatGate");
+const { createNimiSessionWindowLifecycle } = require("./src/helpers/nimiSessionWindows");
+const { captureNimiHostWarnings } = require("./src/helpers/nimiHostWarnings");
+let releaseNimiHostWarnings;
+let nimiExitController;
+module.exports.configureNimiExitController = function configureNimiExitController(controller) {
+  nimiExitController = controller;
+};
+
+module.exports.resetNimiSessionWindows = function resetNimiSessionWindows() {
+  if (!windowManager) return;
+  return nimiSessionWindows
+    .reset()
+    .catch((error) =>
+      debugLogger.error("Nimi session window reset failed", { error: error.message })
+    );
+};
 
 if (shouldForceXWayland(process.argv)) {
   const { spawn } = require("child_process");
@@ -82,21 +98,12 @@ function resolveAppChannel() {
 const APP_CHANNEL = resolveAppChannel();
 process.env.OPENWHISPR_CHANNEL = APP_CHANNEL;
 
-function configureChannelUserDataPath() {
-  if (APP_CHANNEL === "production") {
-    return;
-  }
-
-  const isolatedPath = path.join(app.getPath("appData"), `OpenWhispr-${APP_CHANNEL}`);
-  app.setPath("userData", isolatedPath);
-}
-
-configureChannelUserDataPath();
+const { getAppDataDirectory } = require("./src/helpers/appData");
 
 // Load userData .env (contains DICTATION_KEY, API keys, etc.) early — before
 // hotkey registration, which needs DICTATION_KEY before the renderer loads.
 require("dotenv").config({
-  path: path.join(app.getPath("userData"), ".env"),
+  path: path.join(getAppDataDirectory(), ".env"),
   override: false,
 });
 
@@ -283,12 +290,8 @@ const EnvironmentManager = require("./src/helpers/environment");
 const WindowManager = require("./src/helpers/windowManager");
 const DatabaseManager = require("./src/helpers/database");
 const ClipboardManager = require("./src/helpers/clipboard");
-const WhisperManager = require("./src/helpers/whisper");
-const ParakeetManager = require("./src/helpers/parakeet");
-const DiarizationManager = require("./src/helpers/diarization");
 const TrayManager = require("./src/helpers/tray");
 const dockManager = require("./src/helpers/dockManager");
-const autoStart = require("./src/helpers/autoStart");
 const IPCHandlers = require("./src/helpers/ipcHandlers");
 const CliBridge = require("./src/helpers/cliBridge");
 const UpdateManager = require("./src/updater");
@@ -299,14 +302,6 @@ const LinuxKeyManager = require("./src/helpers/linuxKeyManager");
 const TextEditMonitor = require("./src/helpers/textEditMonitor");
 const SelectionManager = require("./src/helpers/selectionManager");
 const { PermissionGuideManager } = require("./src/helpers/permissionGuideManager");
-const WhisperCudaManager = require("./src/helpers/whisperCudaManager");
-const WhisperVulkanManager = require("./src/helpers/whisperVulkanManager");
-const {
-  migrateLegacyBinDir,
-  detectOrphanedGpuPacks,
-  detectOutdatedGpuPacks,
-} = require("./src/helpers/gpuBinaryManager");
-const { resetWhisperGpuFailureOnUpgrade } = require("./src/helpers/whisperGpuUpgradeReset");
 const GoogleCalendarManager = require("./src/helpers/googleCalendarManager");
 const MicrosoftCalendarManager = require("./src/helpers/microsoftCalendarManager");
 const AppleCalendarManager = require("./src/helpers/appleCalendarManager");
@@ -332,13 +327,40 @@ const { reapStaleSidecars } = require("./src/helpers/sidecarReaper");
 let debugLogger = null;
 let environmentManager = null;
 let windowManager = null;
+let resetWindowPresentation;
+const nimiSessionWindows = createNimiSessionWindowLifecycle({
+  destroyWindows: () => {
+    const snapshot = (win) =>
+      win && !win.isDestroyed()
+        ? { visible: win.isVisible(), focused: win.isFocused(), minimized: win.isMinimized() }
+        : { visible: false, focused: false, minimized: false };
+    resetWindowPresentation = {
+      main: snapshot(windowManager.mainWindow),
+      panel: snapshot(windowManager.controlPanelWindow),
+    };
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.destroy();
+    }
+    windowManager.mainWindow = null;
+    windowManager.controlPanelWindow = null;
+  },
+  createWindows: () =>
+    Promise.all([
+      windowManager.createMainWindow({ sessionRestore: resetWindowPresentation.main }),
+      windowManager.createControlPanelWindow({ sessionRestore: resetWindowPresentation.panel }),
+    ]),
+  log: (message) => debugLogger?.info(message, undefined, "lifecycle"),
+});
+// Run before Kit's before-quit listener retires its session: that retirement
+// must not recreate business windows during a real exit or supervised restart.
+app.prependListener("before-quit", () => {
+  nimiSessionWindows.beginShutdown();
+  if (windowManager) windowManager.isQuitting = true;
+});
 let hotkeyManager = null;
 let databaseManager = null;
 let clipboardManager = null;
 let connectorManager = null;
-let whisperManager = null;
-let parakeetManager = null;
-let diarizationManager = null;
 let trayManager = null;
 let updateManager = null;
 let globeKeyManager = null;
@@ -346,8 +368,6 @@ let windowsKeyManager = null;
 let linuxKeyManager = null;
 let textEditMonitor = null;
 let selectionManager = null;
-let whisperCudaManager = null;
-let whisperVulkanManager = null;
 let googleCalendarManager = null;
 let microsoftCalendarManager = null;
 let appleCalendarManager = null;
@@ -367,8 +387,6 @@ let authBridgeServer = null;
 let pendingNoteCloudId = null;
 let pendingNoteRetryTimer = null;
 let pendingNoteRetryCount = 0;
-const WHISPER_WAKE_REWARM_DELAY_MS = 3000;
-let wakeRewarmTimer = null;
 
 function parseAuthBridgePort() {
   const raw = (process.env.OPENWHISPR_AUTH_BRIDGE_PORT || "").trim();
@@ -415,36 +433,15 @@ function cleanupOrphanedLinuxRestoreToken() {
   if (process.platform !== "linux") return;
   try {
     const fs = require("fs");
-    fs.unlinkSync(path.join(app.getPath("userData"), LINUX_RESTORE_TOKEN_FILENAME));
+    fs.unlinkSync(path.join(getAppDataDirectory(), LINUX_RESTORE_TOKEN_FILENAME));
   } catch {}
-}
-
-function syncAutoStartEntry() {
-  try {
-    if (autoStart.syncAutoStartEntry()) {
-      debugLogger.info("Re-pointed the launch-at-login entry at the current executable");
-    }
-  } catch (error) {
-    debugLogger.warn("Failed to sync the launch-at-login entry", { error: error?.message });
-  }
-}
-
-// Reading the login item touches the OS, and failing to answer "did the session
-// start us?" must not stop the app from starting at all. Falling back to false
-// just shows the window, which is what every launch did before.
-function wasLaunchedAtLoginHidden() {
-  try {
-    return autoStart.wasLaunchedAtLoginHidden();
-  } catch (error) {
-    if (debugLogger) debugLogger.warn("Failed to detect a login launch", { error: error?.message });
-    return false;
-  }
 }
 
 function initializeCoreManagers() {
   setupProductionPath();
 
   debugLogger = require("./src/helpers/debugLogger");
+  releaseNimiHostWarnings ??= captureNimiHostWarnings(debugLogger);
   debugLogger.ensureFileLogging();
   // Registration runs before app ready, when the logger cannot write its file yet.
   if (linuxSchemeHandler?.reason) {
@@ -494,7 +491,7 @@ function initializeCoreManagers() {
   const getConnectorAccountId = connectorAccountIdFrom(getConnectorAccountScope);
   const connectorCredentials = createConnectorCredentials({
     store: createCredentialStore({
-      dir: path.join(app.getPath("userData"), "connectors"),
+      dir: path.join(getAppDataDirectory(), "connectors"),
       secretCrypto: require("./src/helpers/secretCrypto"),
       logger: debugLogger,
     }),
@@ -526,61 +523,6 @@ function initializeCoreManagers() {
   });
   // Pending cards expire in main even when no renderer ever answers them.
   setInterval(() => connectorManager.sweepExpired(), 60 * 1000).unref();
-  whisperManager = new WhisperManager();
-  if (process.platform !== "darwin") {
-    whisperCudaManager = new WhisperCudaManager();
-    whisperVulkanManager = new WhisperVulkanManager();
-    // Heal installs from before GPU packs got per-pack directories; must run
-    // before startup pre-warm resolves any GPU binary path.
-    const LlamaVulkanManager = require("./src/helpers/llamaVulkanManager");
-    const llamaVulkanManager = new LlamaVulkanManager();
-    const clearedPacks = migrateLegacyBinDir([
-      whisperCudaManager,
-      whisperVulkanManager,
-      llamaVulkanManager,
-    ]);
-    if (clearedPacks.length > 0) {
-      // No window exists yet — persist the notice; a control panel window
-      // shows it as a toast and clears it. See #1606.
-      require("./src/helpers/gpuPackMigrationNotice").record(clearedPacks);
-    }
-    // The 1.8.3 migration deleted lib-carrying packs without recording that
-    // notice, leaving those users on a silent CPU fallback: an enabled flag
-    // with no pack on disk only happens via such data loss. recordOnce gates
-    // each pack to one notice so a dismissed toast doesn't return every launch.
-    const gpuPacks = [
-      { manager: whisperCudaManager, enabledEnvVar: "WHISPER_CUDA_ENABLED", group: "whisper" },
-      { manager: whisperVulkanManager, enabledEnvVar: "WHISPER_VULKAN_ENABLED", group: "whisper" },
-      { manager: llamaVulkanManager, enabledEnvVar: "LLAMA_VULKAN_ENABLED" },
-    ];
-    const orphanedPacks = detectOrphanedGpuPacks(gpuPacks);
-    if (orphanedPacks.length > 0) {
-      require("./src/helpers/gpuPackMigrationNotice").recordOnce(orphanedPacks);
-    }
-    // A pack an older release installed that this version can't use (#2424)
-    // otherwise looks like a pack that was never downloaded: say so once per
-    // app version, even to a user who already saw the orphan notice for it.
-    // Only whisper packs can be outdated, so only a user on local whisper
-    // (the only mode whose Settings shows the pack) is told.
-    const outdatedPacks = detectOutdatedGpuPacks(gpuPacks);
-    if (outdatedPacks.length > 0) {
-      const whisperInUse = !!process.env.LOCAL_WHISPER_MODEL;
-      debugLogger.info("GPU packs from an older release need re-downloading", {
-        packs: outdatedPacks,
-        notified: whisperInUse,
-      });
-      if (whisperInUse) {
-        require("./src/helpers/gpuPackMigrationNotice").recordOnce(
-          outdatedPacks,
-          `outdated-${app.getVersion()}`
-        );
-      }
-    }
-    // Lets every server start resolve its GPU backend from installed packs
-    whisperManager.setGpuBinaryManagers({ cuda: whisperCudaManager, vulkan: whisperVulkanManager });
-  }
-  parakeetManager = new ParakeetManager();
-  diarizationManager = new DiarizationManager();
   calendarReminderScheduler = new CalendarReminderScheduler(databaseManager);
   googleCalendarManager = new GoogleCalendarManager(
     databaseManager,
@@ -614,7 +556,6 @@ function initializeCoreManagers() {
   windowManager.meetingDetectionEngine = meetingDetectionEngine;
   calendarReminderScheduler.meetingDetectionEngine = meetingDetectionEngine;
   updateManager = new UpdateManager();
-  updateManager.setWindowManager(windowManager);
   windowsKeyManager = new WindowsKeyManager();
   linuxKeyManager = new LinuxKeyManager();
   textEditMonitor = new TextEditMonitor();
@@ -626,7 +567,6 @@ function initializeCoreManagers() {
   // doesn't pay the probe spawn. No-ops on non-Windows.
   windowsLoopbackAudioManager.getCapability().catch(() => {});
   cleanupOrphanedLinuxRestoreToken();
-  syncAutoStartEntry();
   meetingAecManager = new MeetingAecManager();
   windowManager.textEditMonitor = textEditMonitor;
   windowManager.selectionManager = selectionManager;
@@ -644,17 +584,12 @@ function initializeCoreManagers() {
     environmentManager,
     databaseManager,
     clipboardManager,
-    whisperManager,
-    parakeetManager,
-    diarizationManager,
     windowManager,
     updateManager,
     windowsKeyManager,
     linuxKeyManager,
     textEditMonitor,
     selectionManager,
-    whisperCudaManager,
-    whisperVulkanManager,
     googleCalendarManager,
     microsoftCalendarManager,
     appleCalendarManager,
@@ -666,22 +601,33 @@ function initializeCoreManagers() {
     meetingAecManager,
     getSemanticSearch: () => semanticSearch,
     getTrayManager: () => trayManager,
+    requestHostRestart: () => {
+      if (!nimiExitController) throw new Error("Nimi supervised restart is unavailable");
+      nimiExitController.requestRestart();
+    },
     oauthProtocolRegistered: protocolRegistered,
     oauthProtocol: OAUTH_PROTOCOL,
   });
+  require("./src/helpers/nimiAI").configureUploadOwner({
+    database: databaseManager,
+    audioStorage: ipcHandlers.audioStorageManager,
+    onHistorySaved: (transcription) => {
+      require("./src/helpers/windowBroadcast").broadcastToWindows(
+        "transcription-updated",
+        transcription
+      );
+      void ipcHandlers._ensureAnalyticsHistoryBackfilled();
+    },
+    getSemanticSearch: () => semanticSearch,
+    onSaved: (note) => {
+      require("./src/helpers/windowBroadcast").broadcastToWindows("note-added", note);
+      ipcHandlers.notifyVectorChanges();
+      ipcHandlers._asyncMirrorWrite(note);
+    },
+  });
 }
 
-function registerSidecars() {
-  if (whisperManager) sidecarRegistry.register("whisper", () => whisperManager.stopServer());
-  if (parakeetManager) sidecarRegistry.register("parakeet", () => parakeetManager.stopServer());
-  if (diarizationManager) {
-    sidecarRegistry.register("diarization", () => diarizationManager.shutdown());
-  }
-  const modelManager = require("./src/helpers/modelManagerBridge").default;
-  sidecarRegistry.register("llama", () => modelManager.stopServer());
-  const onnxWorkerClient = require("./src/helpers/onnxWorkerClient");
-  sidecarRegistry.register("onnx", () => onnxWorkerClient.stop());
-}
+function registerSidecars() {}
 
 // Phase 2: Non-critical setup after windows are visible
 function initializeDeferredManagers() {
@@ -698,7 +644,7 @@ function initializeDeferredManagers() {
   trayManager = new TrayManager();
   globeKeyManager = new GlobeKeyManager({
     // Lets the listener put the user's macOS Globe action back after a crash.
-    preferenceStatePath: path.join(app.getPath("userData"), "globe-preference-state.json"),
+    preferenceStatePath: path.join(getAppDataDirectory(), "globe-preference-state.json"),
   });
 
   if (process.platform === "darwin") {
@@ -1100,10 +1046,7 @@ async function startApp() {
 
   // Phase 1: Core managers + IPC handlers before windows
   initializeCoreManagers();
-  await environmentManager.init();
-  // After any upgrade the GPU gets one fresh attempt: clear the remembered
-  // failure before the whisper pre-warm below resolves its GPU backend.
-  resetWhisperGpuFailureOnUpgrade(environmentManager);
+
   registerSidecars();
   startAuthBridgeServer();
 
@@ -1174,11 +1117,8 @@ async function startApp() {
   }
 
   // Create windows FIRST so the user sees UI as soon as possible.
-  // A login launch goes to the tray whatever the preference says: the user asked
-  // the OS to start us, not to put a window in front of them at every login.
-  const launchedHidden = wasLaunchedAtLoginHidden();
-  const startMinimized = environmentManager.getStartMinimized() || launchedHidden;
-  if (debugLogger) debugLogger.info("Start minimized", { enabled: startMinimized, launchedHidden });
+  const startMinimized = environmentManager.getStartMinimized();
+  if (debugLogger) debugLogger.info("Start minimized", { enabled: startMinimized });
   await windowManager.createMainWindow();
   // The activation mode was cached before the hotkey was registered, so a saved
   // Hold could not be checked against its key until now.
@@ -1336,78 +1276,17 @@ async function startApp() {
     }
     if (microsoftCalendarManager) microsoftCalendarManager.onWakeFromSleep();
     if (appleCalendarManager) appleCalendarManager.onWakeFromSleep();
-    // Sleep evicts the local GPU model from VRAM; reload it once the driver settles. See #766.
-    if (wakeRewarmTimer) clearTimeout(wakeRewarmTimer);
-    wakeRewarmTimer = setTimeout(() => {
-      wakeRewarmTimer = null;
-      whisperManager?.onWakeFromSleep().catch((err) => {
-        debugLogger.debug("whisper wake re-warm error (non-fatal)", { error: err.message });
-      });
-    }, WHISPER_WAKE_REWARM_DELAY_MS);
   });
-
-  // Non-blocking server pre-warming; GPU backend resolved by the manager
-  const whisperSettings = {
-    localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
-    whisperModel: process.env.LOCAL_WHISPER_MODEL,
-  };
-  whisperManager.initializeAtStartup(whisperSettings).catch((err) => {
-    debugLogger.debug("Whisper startup init error (non-fatal)", { error: err.message });
-  });
-
-  const parakeetSettings = {
-    localTranscriptionProvider: process.env.LOCAL_TRANSCRIPTION_PROVIDER || "",
-    parakeetModel: process.env.PARAKEET_MODEL,
-    language: process.env.DICTATION_LANGUAGE,
-  };
-  parakeetManager.initializeAtStartup(parakeetSettings).catch((err) => {
-    debugLogger.debug("Parakeet startup init error (non-fatal)", { error: err.message });
-  });
-
-  // TODO: drop legacy REASONING_PROVIDER / LOCAL_REASONING_MODEL fallbacks after 2 releases.
-  const cleanupProvider = process.env.CLEANUP_PROVIDER || process.env.REASONING_PROVIDER;
-  const cleanupLocalModel = process.env.LOCAL_CLEANUP_MODEL || process.env.LOCAL_REASONING_MODEL;
-  if (cleanupProvider === "local" && cleanupLocalModel) {
-    const modelManager = require("./src/helpers/modelManagerBridge").default;
-    modelManager.prewarmServer(cleanupLocalModel).catch((err) => {
-      debugLogger.debug("llama-server pre-warm error (non-fatal)", { error: err.message });
-    });
-  }
-
-  if (
-    process.env.DICTATION_AGENT_PROVIDER === "local" &&
-    process.env.LOCAL_DICTATION_AGENT_MODEL &&
-    process.env.LOCAL_DICTATION_AGENT_MODEL !== cleanupLocalModel
-  ) {
-    const modelManager = require("./src/helpers/modelManagerBridge").default;
-    modelManager.prewarmServer(process.env.LOCAL_DICTATION_AGENT_MODEL).catch((err) => {
-      debugLogger.debug("dictation-agent llama-server pre-warm error (non-fatal)", {
-        error: err.message,
-      });
-    });
-  }
-
-  // Auto-download diarization models if binary is available
-  if (
-    diarizationManager.getBinaryPath() &&
-    (!diarizationManager.isModelDownloaded() || !diarizationManager.isVadModelDownloaded())
-  ) {
-    diarizationManager.downloadModels().catch((err) => {
-      debugLogger.debug("Diarization model auto-download error (non-fatal)", {
-        error: err.message,
-      });
-    });
-  }
 
   const QdrantManager = require("./src/helpers/qdrantManager");
   const SemanticSearchLifecycle = require("./src/helpers/semanticSearchLifecycle");
-  const localEmbeddings = require("./src/helpers/localEmbeddings");
+  const nimiEmbeddings = require("./src/helpers/nimiEmbeddings");
   const qdrantManager = new QdrantManager();
   semanticSearch = new SemanticSearchLifecycle({
     qdrant: qdrantManager,
     vectorIndex: require("./src/helpers/vectorIndex"),
-    embeddings: localEmbeddings,
-    noteEmbedText: localEmbeddings.LocalEmbeddings.noteEmbedText,
+    embeddings: nimiEmbeddings,
+    noteEmbedText: nimiEmbeddings.NimiEmbeddings.noteEmbedText,
     database: databaseManager,
     logger: debugLogger,
   });
@@ -1426,7 +1305,7 @@ async function startApp() {
   trayManager.setCreateControlPanelCallback(() => windowManager.createControlPanelWindow());
   await trayManager.createTray();
 
-  updateManager.checkForUpdatesOnStartup();
+  // Runtime owns Nimi App updates; the upstream standalone updater is inactive.
 
   if (process.platform === "darwin") {
     const { isGlobeLikeHotkey, isMouseButtonHotkey } = require("./src/helpers/hotkeyManager");
@@ -1999,9 +1878,16 @@ if (gotSingleInstanceLock) {
     });
 
   app.on("window-all-closed", () => {
+    debugLogger?.info(
+      "All business windows closed",
+      {
+        quit: nimiSessionWindows.shouldQuitWhenAllClosed(),
+      },
+      "lifecycle"
+    );
     // Don't quit on macOS when all windows are closed
     // The app should stay in the dock/menu bar
-    if (process.platform !== "darwin") {
+    if (process.platform !== "darwin" && nimiSessionWindows.shouldQuitWhenAllClosed()) {
       app.quit();
     }
     // On macOS, keep the app running even without windows
@@ -2050,26 +1936,23 @@ if (gotSingleInstanceLock) {
 
   let isShuttingDown = false;
   app.on("before-quit", (event) => {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-    if (updateManager && updateManager.isQuittingForUpdate) {
-      // Quit must proceed for the installer to run, so no preventDefault;
-      // sidecar shutdown is best-effort (the reaper cleans up orphans on relaunch).
-      performSyncTeardown();
-      sidecarRegistry.shutdownAll().catch(() => {});
+    if (isShuttingDown) {
+      event.preventDefault();
       return;
     }
+    isShuttingDown = true;
     event.preventDefault();
     performSyncTeardown();
-    sidecarRegistry.shutdownAll().finally(() => app.exit(0));
+    sidecarRegistry.shutdownAll().finally(() => {
+      if (!nimiExitController) throw new Error("Nimi Host exit controller is unavailable");
+      nimiExitController.exit();
+    });
   });
 }
 
 function performSyncTeardown() {
-  if (wakeRewarmTimer) {
-    clearTimeout(wakeRewarmTimer);
-    wakeRewarmTimer = null;
-  }
+  releaseNimiHostWarnings?.();
+  releaseNimiHostWarnings = undefined;
   clearPendingNoteDeepLink();
   if (authBridgeServer) {
     authBridgeServer.close();
@@ -2098,5 +1981,4 @@ function performSyncTeardown() {
   if (meetingAecManager) meetingAecManager.stop().catch(() => {});
   if (ipcHandlers) ipcHandlers._cleanupTextEditMonitor();
   if (textEditMonitor) textEditMonitor.stopMonitoring();
-  if (updateManager) updateManager.cleanup();
 }

@@ -8,6 +8,7 @@ import logger from "../utils/logger";
 export interface UsePermissionsReturn {
   // State
   micPermissionGranted: boolean;
+  micPermissionStatus: string;
   accessibilityPermissionGranted: boolean;
   micPermissionError: string | null;
   pasteToolsInfo: PasteToolsResult | null;
@@ -116,6 +117,7 @@ export const usePermissions = (
     false
   );
   const [micPermissionError, setMicPermissionError] = useState<string | null>(null);
+  const [micPermissionStatus, setMicPermissionStatus] = useState("unknown");
   const [accessibilityPermissionGranted, setAccessibilityPermissionGranted] = useLocalStorage(
     "accessibilityPermissionGranted",
     false
@@ -196,9 +198,14 @@ export const usePermissions = (
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stopTracks(stream);
       setMicPermissionGranted(true);
+      setMicPermissionStatus("granted");
       setMicPermissionError(null);
     } catch (err) {
       logger.error("Microphone permission denied:", err);
+      setMicPermissionGranted(false);
+      setMicPermissionStatus(
+        (err as { name?: string })?.name === "NotAllowedError" ? "denied" : "unknown"
+      );
       const message = describeMicError(err, t);
       setMicPermissionError(message);
       if (showAlertDialog) {
@@ -271,13 +278,38 @@ export const usePermissions = (
     checkPasteToolsAvailability();
   }, [checkPasteToolsAvailability]);
 
-  // On macOS, re-validate microphone permission on mount to override stale
-  // localStorage values (e.g. after TCC reset or app update).
+  // OS permission is current truth; the stored value is only a UI cache.
   useEffect(() => {
-    if (getPlatform() !== "darwin") return;
-    window.electronAPI?.checkMicrophoneAccess?.().then((result) => {
-      if (result) setMicPermissionGranted(result.granted);
-    });
+    let active = true;
+    let sequence = 0;
+    const refresh = () => {
+      const request = ++sequence;
+      window.electronAPI
+        ?.checkMicrophoneAccess?.()
+        .then((result) => {
+          if (active && request === sequence && result) {
+            setMicPermissionStatus(
+              ["granted", "denied", "restricted", "not-determined"].includes(result.status)
+                ? result.status
+                : "unknown"
+            );
+            setMicPermissionGranted(result.status === "granted");
+          }
+        })
+        .catch((error) => {
+          if (active && request === sequence) {
+            setMicPermissionStatus("unknown");
+            setMicPermissionGranted(false);
+          }
+          logger.warn("Microphone permission check failed", { error: error?.message });
+        });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refresh);
+    };
   }, [setMicPermissionGranted]);
 
   // On macOS, re-validate accessibility permission once this screen is allowed
@@ -323,6 +355,7 @@ export const usePermissions = (
 
   return {
     micPermissionGranted,
+    micPermissionStatus,
     accessibilityPermissionGranted,
     micPermissionError,
     pasteToolsInfo,

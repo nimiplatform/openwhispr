@@ -677,6 +677,9 @@
       "retryTranscription": "Erneut transkribieren",
       "retrying": "Wird erneut transkribiert…",
       "retrySuccess": "Transkription aktualisiert",
+      "recordedFailureReason": "Gespeicherte Fehlerursache: {{reason}}",
+      "retryNotificationWarning": "Transkription gespeichert; einige Fenster konnten nicht benachrichtigt werden.",
+      "retryEditingWarning": "Transkription gespeichert; einige Textbearbeitungsschritte wurden nicht abgeschlossen.",
       "retryError": "Erneute Transkription fehlgeschlagen",
       "audioNotFound": "Audiodatei nicht gefunden oder abgelaufen",
       "noAiProcessing": "Auf diese Transkription wurde keine KI-Verarbeitung angewendet",
@@ -902,7 +905,8 @@
         "agentUnavailable": "Assistent nicht verfügbar",
         "screenContextSkipped": "Bildschirmkontext übersprungen",
         "dailyLimitReached": "Tägliches Limit erreicht",
-        "providerRateLimited": "Anbieter-Ratenlimit erreicht"
+        "providerRateLimited": "Anbieter-Ratenlimit erreicht",
+        "cancellationUnconfirmed": "Abbruch nicht bestätigt"
       },
       "fallback": {
         "title": "Fallback-Modus",
@@ -984,7 +988,8 @@
       },
       "pasteFailed": {
         "title": "Automatisches Einfügen fehlgeschlagen"
-      }
+      },
+      "dictionaryPromptTooLong": "Das Diktatwörterbuch ist zu lang. Reduziere die Einträge und versuche es erneut."
     },
     "clipboard": {
       "pasteFailed": {
@@ -3425,9 +3430,9 @@
       "transcriptionFailed": "Transkription fehlgeschlagen",
       "errorOccurred": "Ein Fehler ist aufgetreten",
       "noSpeechDetected": "In dieser Audiodatei wurde keine Sprache erkannt.",
-      "noProviderTitle": "Kein Transkriptionsanbieter eingerichtet",
-      "noProviderDescription": "Fügen Sie einen API-Schlüssel hinzu oder laden Sie ein lokales Modell herunter, um mit der Transkription zu beginnen.",
-      "noProviderAction": "Transkriptionseinstellungen öffnen",
+      "noProviderTitle": "Nimi-Transkription ist nicht verfügbar",
+      "noProviderDescription": "Wählen Sie in Nimi ein verfügbares Spracherkennungsmodell. Ist die Sitzung abgelaufen, melden Sie sich bei Nimi an und versuchen Sie es erneut.",
+      "noProviderAction": "Nimi-Modelleinstellungen öffnen",
       "fileTooLarge": "Diese Datei überschreitet das Limit von 500 MB.",
       "paidPlanRequired": "Cloud-Transkription für Dateien über 25 MB erfordert einen kostenpflichtigen Plan. Große Dateien werden mit OpenWhispr Cloud für zuverlässige, hochwertige Ergebnisse verarbeitet.",
       "largeFileNote": "Große Dateien werden aufgeteilt und parallel transkribiert.",
@@ -3501,7 +3506,11 @@
       "systemAudioQuiet": {
         "title": "Meeting-Audio ist verstummt",
         "description": "Seit einigen Minuten war niemand zu hören. Falls das Gespräch noch läuft, prüfen Sie Ihr Audioausgabegerät."
-      }
+      },
+      "finishing": "Transkription wird abgeschlossen und gespeichert…",
+      "cancelFinishing": "Verarbeitung stoppen, Aufnahme behalten",
+      "saved": "Transkription und Aufnahme gespeichert",
+      "canceled": "Verarbeitung abgebrochen, Aufnahme behalten"
     },
     "meetingPill": {
       "returnToNote": "Zurück zur Aufnahme",
@@ -3606,7 +3615,7 @@
         }
       },
       "errors": {
-        "noModel": "Kein KI-Modell ausgewählt. Konfigurieren Sie eins in den Einstellungen.",
+        "noModel": "Kein Nimi-Textmodell verfügbar. Wählen Sie eines in den Nimi-Modelleinstellungen.",
         "actionFailed": "Aktion fehlgeschlagen",
         "noEndpoint": "Keine URL für den selbst gehosteten Server festgelegt. Konfigurieren Sie eine in den Einstellungen.",
         "outputTruncated": "Dem KI-Modell ging der Platz aus, bevor es fertig war. Die Notiz bleibt daher unverändert.",
@@ -4851,6 +4860,68 @@
     "details": {
       "provider": "Anbieter",
       "requestId": "Anfrage-ID"
+    }
+  },
+  "nimi": {
+    "transcriptionSpeakerOptionsUnsupported": "Diese Transkriptionsanfrage wurde abgelehnt. Die Aufgabe fordert Sprecherintervalle an. Prüfe die Nimi-Konfiguration sowie Audioformat, Sprache, Wörterbuch und weitere Anfrageoptionen. Gespeicherte Aufnahmen lassen sich über die Originaldatei der Notiz öffnen. Grund: {{reason}}",
+    "transcriptionTimingUnsupported": "Diese Transkriptionsanfrage wurde abgelehnt. Die Aufgabe fordert Zeitinformationen an. Prüfe die Nimi-Konfiguration sowie Audioformat, Sprache, Wörterbuch und weitere Anfrageoptionen, bevor du die gespeicherte Aufnahme erneut verarbeitest. Grund: {{reason}}",
+    "meetingModelRequirements": "Meetings benötigen echte Wortzeiten. Zur Unterscheidung von Sprechern muss das Sprachmodell auch Sprechertrennung unterstützen. Verfügbarkeit allein bestätigt diese Optionen nicht.",
+    "sessionConnectionTitle": "Nimi-Verbindung nicht verfügbar",
+    "sessionConnectionUnavailable": "Die App konnte keine Nimi-Verbindung herstellen. Prüfe diese App in Nimi und versuche es erneut. Grund: {{reason}}",
+    "sessionScopeChanged": "Das Konto hat sich während der Vorbereitung geändert. Starte eine neue Aufgabe.",
+    "checkConnection": "Verbindung prüfen",
+    "sessionRecordingRecovery": "Falls die Aufnahme gespeichert wurde, öffne Start und wähle im Menü Weitere Aktionen erneut Transkribieren.",
+    "pasteNotDelivered": "Text wurde nicht eingefügt",
+    "pasteRecovery": "Kehre zum ursprünglichen Editor zurück und versuche es erneut oder füge den kopierten Text manuell ein.",
+    "pasteRecoveryCopyFailed": "Auch das Kopieren ist fehlgeschlagen. Kopiere den Text unten und füge ihn manuell ein.",
+    "startupUnavailable": "Diese Entwicklungsregistrierung unterstützt keinen Autostart bei der Anmeldung. Öffnen Sie die App über Nimi.",
+    "desktopNotReady": "Starten Sie Nimi Desktop, melden Sie sich an und versuchen Sie es erneut.",
+    "modelsTitle": "Nimi-Modelle",
+    "modelsDescription": "Wähle Sprach-, Text- und Embedding-Modelle in Nimi. Zugangsdaten bleiben bei Nimi.",
+    "signInRequired": "Melde dich in Nimi Desktop an, um KI zu konfigurieren und zu nutzen. Geräte und Tastenkürzel kannst du jetzt einrichten.",
+    "openNimi": "Nimi öffnen",
+    "retry": "Erneut versuchen",
+    "deferMicrophone": "Notizen jetzt nutzen, Mikrofon später aktivieren",
+    "microphoneRequired": "Aufnahmen benötigen Mikrofonzugriff. Notizen sind bereits verfügbar.",
+    "microphoneSettings": "Mikrofoneinstellungen",
+    "speakerLabelsPending": "Sprecherzuordnung wird noch an Nimi angebunden. Transkription ohne Sprecher ist separat nutzbar.",
+    "originalSource": "Originaldatei",
+    "searchSemantic": "semantische Suche",
+    "searchKeyword": "Stichwortsuche",
+    "searchScope": " in {{space}}",
+    "searchEmpty": "Keine Notizen für „{{query}}“ gefunden{{scope}} ({{method}})",
+    "searchResults": "{{count}} Notizen für „{{query}}“ gefunden{{scope}} ({{method}})",
+    "searchUnavailable": "Die Suche ist nicht verfügbar. Versuche es erneut.",
+    "previewUnavailableTitle": "Live-Vorschau beendet",
+    "previewUnavailableDescription": "Die Aufnahme läuft weiter. Beim Stoppen versucht Nimi, die gesamte Aufnahme zu transkribieren.",
+    "speakerRepresentations": "Sprecherstimmen",
+    "speakerMatchingIncomplete": "Einige Stimmen konnten nicht zugeordnet werden. Die ursprünglichen Sprecherabschnitte sind gespeichert. Prüfen Sie die Namen manuell oder das Sprechermodell in Nimi.",
+    "microphoneUnknown": "Der Mikrofonzugriff ist noch nicht bestätigt. Prüfe die Systemeinstellungen; Notizen sind bereits verfügbar.",
+    "restartTitle": "App neu starten",
+    "restartDescription": "Nimi öffnet diese App erneut. Beende zuerst die Aufnahme und Verarbeitung.",
+    "restartBusy": "Beende Aufnahme und Verarbeitung, bevor du die App neu startest.",
+    "businessAIManaged": "Die KI-Regeln deines Arbeitsbereichs können für Nimi noch nicht bestätigt werden. KI ist für dieses verwaltete Konto nicht verfügbar; Notizen und andere Funktionen bleiben nutzbar.",
+    "updatesManaged": "App-Updates werden in Nimi verwaltet. Diese Entwicklungsregistrierung hat kein installiertes Paketupdate.",
+    "appDataTitle": "App-Daten",
+    "appDataDescription": "Verwalte Einstellungen, Notizen, Verlauf, Aufnahmen und Suchindex dieser App.",
+    "appDataReset": "Löscht die lokalen Einstellungen, Notizen, den Verlauf, Aufnahmen und den Suchindex dieser App. Nimi-Modelle und Zugangsdaten bleiben erhalten.",
+    "updatesOpen": "Nimi-App-Verwaltung öffnen",
+    "businessAIUnresolved": "Die Richtlinie des Arbeitsbereichs ist noch ungeklärt. Versuche es nach Bestätigung des Kontos erneut; Notizen bleiben verfügbar.",
+    "recordingMedia": {
+      "recording": "Aufnahme {{number}}",
+      "mic": "Mikrofon",
+      "system": "Systemaudio",
+      "seconds": "{{seconds}} s",
+      "status": {
+        "processing": "In Bearbeitung",
+        "completed": "Abgeschlossen",
+        "canceled": "Abgebrochen",
+        "failed": "Fehlgeschlagen",
+        "unknown": "Status unbekannt"
+      },
+      "openFailed": "Mediendatei nicht gefunden",
+      "checkFile": "Prüfe, ob die Originaldatei noch auf diesem Gerät gespeichert ist.",
+      "unavailable": "Keine Originalmedien verfügbar."
     }
   }
 }

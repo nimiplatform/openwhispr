@@ -37,6 +37,35 @@ function managerWithCapture(createManager, capture) {
   };
 }
 
+test("formal Nimi voice-assistant processing banks the same captured screen and conversational selection", async t => {
+  const { createManager } = await loadAudioManager(t, { cachePrefix: "nimi-assistant-screen-", settingsKey: "__nimiAssistantScreen" });
+  const image = { mediaType: "image/jpeg", data: "declared-fixture-base64" };
+  const selected = { text: "同次选区", source: "assistant" };
+  const manager = createManager({ isProcessing: true, voiceAgentRequested: true,
+    screenContextPromise: Promise.resolve(image), consumeAssistantSelectionContext: () => selected,
+    assertAgentAllowedByPolicy() {}, pendingAssistantConversation: null });
+  const controller = new AbortController();
+  await manager.processTranscriptionWithNimi("结合当前屏幕回答", () => false, controller.signal);
+  assert.equal(manager.pendingAssistantConversation.screenContext, image);
+  assert.equal(manager.pendingAssistantConversation.selectedContext, selected);
+  assert.equal(manager.screenContextPromise, null);
+});
+
+test("retirement while awaiting a screen cannot bank the old assistant request; ordinary dictation never consumes a screen", async t => {
+  const { createManager } = await loadAudioManager(t, { cachePrefix: "nimi-assistant-screen-cancel-", settingsKey: "__nimiAssistantScreenCancel" });
+  let resolve; const controller = new AbortController();
+  const manager = createManager({ isProcessing: true, voiceAgentRequested: true,
+    screenContextPromise: new Promise(done => { resolve = done; }), pendingAssistantConversation: null });
+  const pending = manager.processTranscriptionWithNimi("command", () => controller.signal.aborted, controller.signal);
+  controller.abort(); resolve({ dataUrl: "declared-late-image" });
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(manager.pendingAssistantConversation, null);
+  manager.voiceAgentRequested = false; let captures = 0;
+  manager.consumeScreenContext = () => { captures++; return null; };
+  await manager.processTranscriptionWithNimi("普通听写", () => false, new AbortController().signal);
+  assert.equal(captures, 0);
+});
+
 test("a standalone command banks a panel directive and returns the transcript", async (t) => {
   const { createManager } = await loadAudioManager(t, {
     cachePrefix: "openwhispr-assistant-standalone-",

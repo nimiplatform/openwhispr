@@ -3,7 +3,8 @@ const EventEmitter = require("events");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
-const os = require("os");
+const { getAppDataDirectory } = require("./appData");
+const { mediaHelperEnvironment } = require("./mediaHelperEnvironment");
 const debugLogger = require("./debugLogger");
 const {
   findAvailablePort,
@@ -30,9 +31,7 @@ const MAX_RESTARTS_PER_SESSION = 3;
 const RESTART_EXIT_WAIT_MS = 2000;
 
 const STORAGE_DIR = path.join(
-  os.homedir(),
-  ".cache",
-  "openwhispr",
+  getAppDataDirectory(),
   process.env.NODE_ENV === "development" ? "qdrant-data-dev" : "qdrant-data"
 );
 
@@ -115,7 +114,9 @@ class QdrantManager extends EventEmitter {
       "service:",
       "  host: 127.0.0.1",
       `  http_port: ${this.port}`,
-      `  grpc_port: ${this.port + 1}`,
+      "  grpc_port: null",
+      "  enable_cors: false",
+      "telemetry_disabled: true",
       "log_level: warn",
       "",
     ].join("\n");
@@ -134,6 +135,7 @@ class QdrantManager extends EventEmitter {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
+      env: mediaHelperEnvironment(),
     });
     this.process = child;
     sidecarPidFile.write("qdrant", child.pid);

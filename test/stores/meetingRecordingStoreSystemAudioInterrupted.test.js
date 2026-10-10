@@ -65,6 +65,11 @@ async function loadStore(t, api) {
     window: { electronAPI: api, setTimeout: (fn, ms) => setTimeout(fn, ms) },
   });
   const vite = await createRendererServer(t, {
+    // Session readiness is tested separately; these fixtures isolate capture.
+    mockModules: {
+      "/services/nimiClient":
+        "export async function prepareNimiAIWork(signal) { signal?.throwIfAborted(); await globalThis.__meetingStartReadiness?.(signal); signal?.throwIfAborted(); }",
+    },
     cachePrefix: "openwhispr-meeting-system-audio-interrupted-test-",
   });
   return vite.ssrLoadModule("/stores/meetingRecordingStore.ts");

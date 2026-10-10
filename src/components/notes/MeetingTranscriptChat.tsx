@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Check, Loader2, Sparkles, Users, X } from "../icons";
@@ -8,6 +8,10 @@ import { Toggle } from "../ui/toggle";
 import { cn } from "../lib/utils";
 import { MAX_SPEAKER_COUNT } from "../../constants/speakerDetection.json";
 import type { TranscriptSegment } from "../../stores/meetingRecordingStore";
+import {
+  groupMeetingTranscript,
+  meetingGroupSelectionToggles,
+} from "../../utils/meetingTranscriptGroups";
 import {
   isTranscriptSpeakerLocked,
   resolveSegmentSpeakerName,
@@ -393,7 +397,7 @@ function SpeakerPicker({ speakerProfiles, participants, onSelectName, t }: Speak
   );
 }
 
-function SpeakerLabel({
+export function SpeakerLabel({
   speakerId,
   segment,
   resolvedName,
@@ -499,10 +503,14 @@ function SpeakerLabel({
 
 function SelectCheckbox({
   isSelected,
+  isPartiallySelected,
+  label,
   onToggle,
   className,
 }: {
   isSelected: boolean;
+  isPartiallySelected: boolean;
+  label: string;
   onToggle: () => void;
   className?: string;
 }) {
@@ -512,16 +520,20 @@ function SelectCheckbox({
         e.stopPropagation();
         onToggle();
       }}
-      aria-pressed={isSelected}
+      role="checkbox"
+      aria-checked={isPartiallySelected ? "mixed" : isSelected}
+      aria-label={label}
       className={cn(
         "w-4 h-4 rounded-full border flex items-center justify-center transition-all cursor-pointer",
-        isSelected
+        isSelected || isPartiallySelected
           ? "border-primary bg-primary text-primary-foreground opacity-100"
-          : "border-border/70 bg-background/80 opacity-0 group-hover:opacity-100 hover:border-foreground/50",
+          : "border-border/70 bg-background/80 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:border-foreground/50",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
         className
       )}
     >
       {isSelected && <Check size={10} strokeWidth={3} />}
+      {isPartiallySelected && <span className="w-2 h-0.5 bg-current" />}
     </button>
   );
 }
@@ -581,12 +593,14 @@ export function SelectionBar({
 
 interface SegmentRowProps {
   segment: TranscriptSegment;
+  text: string;
   selfSide: boolean;
   sameSpeaker: boolean;
   isFirst: boolean;
   isNewest: boolean;
   colorIdx: number;
   isSelected: boolean;
+  isPartiallySelected: boolean;
   activeName?: string;
   matchedProfile?: SpeakerProfileLite;
   speakerProfiles?: SpeakerProfileLite[];
@@ -611,12 +625,14 @@ interface SegmentRowProps {
 // into view, so older rows would replay their entrance.
 const SegmentRow = memo(function SegmentRow({
   segment,
+  text,
   selfSide,
   sameSpeaker,
   isFirst,
   isNewest,
   colorIdx,
   isSelected,
+  isPartiallySelected,
   activeName,
   matchedProfile,
   speakerProfiles,
@@ -703,11 +719,13 @@ const SegmentRow = memo(function SegmentRow({
             isSelected && "ring-2 ring-primary/60"
           )}
         >
-          <span dir="auto">{segment.text}</span>
+          <span dir="auto">{text}</span>
         </div>
         {selectable && (
           <SelectCheckbox
             isSelected={isSelected}
+            isPartiallySelected={isPartiallySelected}
+            label={text}
             onToggle={() => onToggleSelect?.(segment.id)}
             className={cn("absolute top-1.5", selfSide ? "-start-6" : "-end-6")}
           />
@@ -772,6 +790,24 @@ export function MeetingTranscriptChat({
   contentClassName,
 }: MeetingTranscriptChatProps) {
   const { t } = useTranslation();
+  const groups = useMemo(
+    () => groupMeetingTranscript(segments, speakerMappings),
+    [segments, speakerMappings]
+  );
+  const groupsById = useMemo(
+    () => new Map(groups.map((group) => [group.units[0].id, group])),
+    [groups]
+  );
+  const handleToggleGroup = useCallback(
+    (id: string) => {
+      const group = groupsById.get(id);
+      if (!group || !onToggleSelect) return;
+      for (const memberId of meetingGroupSelectionToggles(group, selectedSegmentIds ?? new Set())) {
+        onToggleSelect(memberId);
+      }
+    },
+    [groupsById, onToggleSelect, selectedSegmentIds]
+  );
   const hasContent = segments.length > 0 || Boolean(micPartial) || Boolean(systemPartial);
   // The scroller mounts only once content exists, and a recording opens with
   // partials before its first final segment — the follow effect must re-run on
@@ -790,10 +826,10 @@ export function MeetingTranscriptChat({
   // Rows are keyed by segment id, not index: segments are inserted by timestamp
   // and retracted mid-list, which would misalign an index-keyed size cache.
   const virtualizer = useVirtualizer({
-    count: segments.length,
+    count: groups.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_PX,
-    getItemKey: (index) => segments[index].id,
+    getItemKey: (index) => groups[index].units[0].id,
     initialRect: INITIAL_VIEWPORT_RECT,
     overscan: 8,
   });
@@ -814,17 +850,17 @@ export function MeetingTranscriptChat({
   // stable props, so partial ticks (which change neither input) skip every row.
   const rowMeta = useMemo(
     () =>
-      segments.map((segment) => ({
+      groups.map(({ units: [segment] }) => ({
         key: getEffectiveSpeakerKey(segment, speakerMappings),
         activeName: resolveSegmentSpeakerName(segment, speakerMappings),
       })),
-    [segments, speakerMappings]
+    [groups, speakerMappings]
   );
 
   const colorByKey = useMemo(() => {
     const map = new Map<string, number>();
     let nextIdx = 0;
-    segments.forEach((segment, i) => {
+    groups.forEach(({ units: [segment] }, i) => {
       if (segment.source === "mic" && !segment.speaker) return;
       if (segment.speaker === "you") return;
       const key = rowMeta[i].key;
@@ -834,7 +870,7 @@ export function MeetingTranscriptChat({
       }
     });
     return map;
-  }, [segments, rowMeta]);
+  }, [groups, rowMeta]);
 
   // First profile with an id per display name — mirrors the .find() each row did.
   const profilesByName = useMemo(() => {
@@ -920,9 +956,7 @@ export function MeetingTranscriptChat({
                     −
                   </button>
                   <span className="px-1.5 tabular-nums" aria-live="polite">
-                    {sessionExpectedCount === 1
-                      ? t("notes.speaker.pill.justYou")
-                      : sessionExpectedCount}
+                    {sessionExpectedCount}
                   </span>
                   <button
                     onClick={() => onSetSessionExpectedCount?.(sessionExpectedCount + 1)}
@@ -955,6 +989,19 @@ export function MeetingTranscriptChat({
           </div>
         </div>
       )}
+      {segments.some(
+        (segment) => segment.speakerMatching && segment.speakerMatching !== "matched-space"
+      ) && (
+        <p
+          role="status"
+          className={cn(
+            "shrink-0 px-7 py-2 text-sm leading-relaxed text-muted-foreground",
+            contentClassName
+          )}
+        >
+          {t("nimi.speakerMatchingIncomplete")}
+        </p>
+      )}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
@@ -968,7 +1015,11 @@ export function MeetingTranscriptChat({
           <div style={{ height: totalSize, width: "100%", position: "relative" }}>
             {virtualizer.getVirtualItems().map((virtualItem) => {
               const i = virtualItem.index;
-              const segment = segments[i];
+              const group = groups[i];
+              const segment = group.units[0];
+              const selectedCount = group.units.filter((unit) =>
+                selectedSegmentIds?.has(unit.id)
+              ).length;
               const selfSide = isSelfSide(segment);
               const isSystemSpeaker = !!segment.speaker && !selfSide;
               const { key, activeName } = rowMeta[i];
@@ -988,12 +1039,14 @@ export function MeetingTranscriptChat({
                 >
                   <SegmentRow
                     segment={segment}
+                    text={group.text}
                     selfSide={selfSide}
-                    sameSpeaker={i > 0 && rowMeta[i - 1].key === key}
+                    sameSpeaker={i > 0 && groups[i - 1].attribution === group.attribution}
                     isFirst={i === 0}
-                    isNewest={i === segments.length - 1}
+                    isNewest={i === groups.length - 1}
                     colorIdx={isSystemSpeaker ? (colorByKey.get(key) ?? 0) : 0}
-                    isSelected={selectedSegmentIds?.has(segment.id) ?? false}
+                    isSelected={selectedCount === group.units.length}
+                    isPartiallySelected={selectedCount > 0 && selectedCount < group.units.length}
                     activeName={activeName}
                     matchedProfile={activeName ? profilesByName.get(activeName) : undefined}
                     speakerProfiles={speakerProfiles}
@@ -1002,7 +1055,7 @@ export function MeetingTranscriptChat({
                     onConfirmSuggestion={onConfirmSuggestion}
                     onDismissSuggestion={onDismissSuggestion}
                     onAttachSpeakerEmail={onAttachSpeakerEmail}
-                    onToggleSelect={onToggleSelect}
+                    onToggleSelect={onToggleSelect ? handleToggleGroup : undefined}
                     t={t}
                   />
                 </div>

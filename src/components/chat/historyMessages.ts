@@ -1,9 +1,6 @@
 import type { Message, ToolCallInfo } from "./types";
 
-export interface HistoryMessage {
-  role: string;
-  content: string | Array<Record<string, unknown>>;
-}
+export type HistoryMessage = import("ai").ModelMessage;
 
 const HISTORY_LIMIT = 20;
 const TRACE_ARG_MAX_CHARS = 80;
@@ -68,11 +65,16 @@ export function toolTrace(toolCalls: ReadonlyArray<ToolCallInfo> | undefined): s
  * start of a note stays hidden until it can tell.
  */
 export function withoutEchoedToolTrace(content: string): string {
-  const opening = content.trimStart();
-  if (!opening) return content;
-  if (TRACE_OPENING.startsWith(opening)) return "";
-  if (opening.startsWith(TRACE_OPENING) && !/[\]\n]/.test(opening)) return "";
-  return content.replace(ECHOED_TRACE, "");
+  let remainder = content;
+  while (true) {
+    const opening = remainder.trimStart();
+    if (!opening) return remainder;
+    if (TRACE_OPENING.startsWith(opening)) return "";
+    if (opening.startsWith(TRACE_OPENING) && !opening.includes("]")) return "";
+    const stripped = remainder.replace(ECHOED_TRACE, "");
+    if (stripped === remainder) return remainder;
+    remainder = stripped;
+  }
 }
 
 /** The last messages as the model sees them, with earlier tool use noted on assistant turns. */
@@ -80,8 +82,10 @@ export function toHistoryMessages(
   messages: ReadonlyArray<Message>,
   { includeToolTrace }: { includeToolTrace: boolean }
 ): HistoryMessage[] {
-  return messages.slice(-HISTORY_LIMIT).map((m) => {
+  return messages.slice(-HISTORY_LIMIT).flatMap((m): HistoryMessage[] => {
+    if (m.nimiTranscript) return m.nimiTranscript;
     const trace = includeToolTrace && m.role === "assistant" ? toolTrace(m.toolCalls) : "";
-    return { role: m.role, content: trace ? `${trace}\n\n${m.content}` : m.content };
+    if (m.role === "tool") return [];
+    return [{ role: m.role, content: trace ? `${trace}\n\n${m.content}` : m.content }];
   });
 }

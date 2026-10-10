@@ -2,6 +2,7 @@ import { TFunction } from "i18next";
 import { describeProviderError } from "./describeProviderError";
 
 type RecordingError = {
+  audioCancellationFailed?: boolean;
   code?: string;
   title: string;
   description?: string;
@@ -13,6 +14,10 @@ type RecordingError = {
 };
 
 export function getRecordingErrorTitle(error: RecordingError, t: TFunction): string {
+  if (error.audioCancellationFailed)
+    return t("hooks.audioRecording.errorTitles.cancellationUnconfirmed");
+  if (error.code === "NIMI_SESSION_UNAVAILABLE" || error.code === "NIMI_SESSION_CHANGED")
+    return t("nimi.sessionConnectionTitle");
   if (error.code === "ACCESSIBILITY_PERMISSION_REQUIRED") {
     return t("hooks.audioRecording.pastePermission.title");
   }
@@ -44,6 +49,12 @@ export function getRecordingErrorTitle(error: RecordingError, t: TFunction): str
 }
 
 export function getRecordingErrorDescription(error: RecordingError, t: TFunction): string {
+  if (error.code === "NIMI_SESSION_UNAVAILABLE" || error.code === "NIMI_SESSION_CHANGED") {
+    const reason = error.messageKey
+      ? describeProviderError(error, t).description
+      : error.description || "";
+    return `${reason} ${t("nimi.sessionRecordingRecovery")}`;
+  }
   if (error.code === "ACCESSIBILITY_PERMISSION_REQUIRED") {
     return t("hooks.audioRecording.pastePermission.description");
   }

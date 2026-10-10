@@ -690,6 +690,9 @@
       "retryTranscription": "再文字起こし",
       "retrying": "再文字起こし中…",
       "retrySuccess": "文字起こしが更新されました",
+      "recordedFailureReason": "記録されている失敗理由：{{reason}}",
+      "retryNotificationWarning": "文字起こしは保存されました。一部のウィンドウに通知できませんでした。",
+      "retryEditingWarning": "文字起こしは保存されました。一部の文章処理は完了していません。",
       "retryError": "再文字起こしに失敗しました",
       "audioNotFound": "音声ファイルが見つからないか有効期限切れです",
       "noAiProcessing": "この文字起こしにはAI処理が適用されていません",
@@ -902,7 +905,8 @@
         "agentUnavailable": "アシスタントを利用できません",
         "screenContextSkipped": "画面コンテキストをスキップしました",
         "dailyLimitReached": "1 日の上限に達しました",
-        "providerRateLimited": "プロバイダーのレート制限"
+        "providerRateLimited": "プロバイダーのレート制限",
+        "cancellationUnconfirmed": "キャンセル未確認"
       },
       "fallback": {
         "title": "フォールバックモード",
@@ -984,7 +988,8 @@
       },
       "pasteFailed": {
         "title": "自動貼り付けに失敗しました"
-      }
+      },
+      "dictionaryPromptTooLong": "音声入力の辞書が長すぎます。項目を減らして、もう一度お試しください。"
     },
     "clipboard": {
       "pasteFailed": {
@@ -3020,7 +3025,7 @@
         }
       },
       "errors": {
-        "noModel": "AIモデルが選択されていません。設定で構成してください。",
+        "noModel": "Nimi のテキストモデルを利用できません。Nimi モデル設定で選択してください。",
         "actionFailed": "アクションに失敗しました",
         "noEndpoint": "セルフホストサーバーの URL が設定されていません。設定で構成してください。",
         "outputTruncated": "AIモデルが出力の上限に達して最後まで書けなかったため、ノートは変更されていません。",
@@ -3140,9 +3145,9 @@
       "transcriptionFailed": "文字起こしに失敗しました",
       "errorOccurred": "エラーが発生しました",
       "noSpeechDetected": "この音声から発話を検出できませんでした。",
-      "noProviderTitle": "文字起こしプロバイダーが設定されていません",
-      "noProviderDescription": "API キーを追加するか、ローカルモデルをダウンロードして文字起こしを開始してください。",
-      "noProviderAction": "文字起こし設定を開く",
+      "noProviderTitle": "Nimi の文字起こしを利用できません",
+      "noProviderDescription": "Nimi で利用可能な文字起こしモデルを選択してください。セッションが切れた場合は Nimi にログインして再試行してください。",
+      "noProviderAction": "Nimi のモデル設定を開く",
       "fileTooLarge": "このファイルは 500 MB の制限を超えています。",
       "largeFileNote": "大容量ファイルは分割され、並列で文字起こしされます。",
       "chunkProgress": "パート {{completed}} / {{total}} を文字起こし中...",
@@ -3216,7 +3221,11 @@
       "systemAudioQuiet": {
         "title": "会議の音声が無音になりました",
         "description": "数分間、誰の声も検出されていません。通話が続いている場合は、音声出力デバイスを確認してください。"
-      }
+      },
+      "finishing": "文字起こしを完了して保存中…",
+      "cancelFinishing": "処理を停止して録音を保持",
+      "saved": "文字起こしと録音を保存しました",
+      "canceled": "処理を停止し、録音を保持しました"
     },
     "meetingPill": {
       "returnToNote": "録音に戻る",
@@ -4851,6 +4860,68 @@
     "details": {
       "provider": "プロバイダー",
       "requestId": "リクエストID"
+    }
+  },
+  "nimi": {
+    "transcriptionSpeakerOptionsUnsupported": "この文字起こし要求は拒否されました。このタスクは話者区間を要求しています。Nimi の設定、音声形式、言語、語彙とその他の要求オプションを確認してください。保存済みの録音はノートの元のファイルから開けます。理由：{{reason}}",
+    "transcriptionTimingUnsupported": "この文字起こし要求は拒否されました。このタスクは時刻情報を要求しています。Nimi の設定、音声形式、言語、語彙とその他の要求オプションを確認してから保存済みの録音を再試行してください。理由：{{reason}}",
+    "meetingModelRequirements": "会議には実際の単語ごとの時刻情報が必要です。話者を区別するには話者分離にも対応した音声モデルを Nimi で選んでください。利用可能なモデルがこれらのオプションに対応するとは限りません。",
+    "sessionConnectionTitle": "Nimi に接続できません",
+    "sessionConnectionUnavailable": "アプリが Nimi に接続できませんでした。Nimi でこのアプリを確認して再試行してください。理由：{{reason}}",
+    "sessionScopeChanged": "準備中にアカウントが変更されました。新しいタスクを開始してください。",
+    "checkConnection": "接続を確認",
+    "sessionRecordingRecovery": "録音が保存されている場合は、ホームでその録音のその他の操作メニューから再文字起こしを選択してください。",
+    "pasteNotDelivered": "テキストを入力できませんでした",
+    "pasteRecovery": "元のエディターに戻って再試行するか、コピーした文字を手動で貼り付けてください。",
+    "pasteRecoveryCopyFailed": "コピーも失敗しました。下の文字をコピーして貼り付けてください。",
+    "startupUnavailable": "この開発登録はログイン時の自動起動に対応していません。Nimi からアプリを開いてください。",
+    "desktopNotReady": "Nimi Desktop を起動してログインを完了し、もう一度お試しください。",
+    "modelsTitle": "Nimiのモデル",
+    "modelsDescription": "音声、テキスト、埋め込みのモデルをNimiで選択します。認証情報はNimiが管理します。",
+    "signInRequired": "AIの設定と利用にはNimi Desktopへのサインインが必要です。デバイスとショートカットの設定は先に完了できます。",
+    "openNimi": "Nimiを開く",
+    "retry": "再試行",
+    "deferMicrophone": "先にノートを使い、マイクは後で有効にする",
+    "microphoneRequired": "録音にはマイクの許可が必要です。ノートは今すぐ使えます。",
+    "microphoneSettings": "マイク設定",
+    "speakerLabelsPending": "話者ラベルはNimiへの接続作業中です。ラベルなしの文字起こしは別に利用できます。",
+    "originalSource": "元のファイル",
+    "searchSemantic": "意味検索",
+    "searchKeyword": "キーワード検索",
+    "searchScope": "（{{space}}）",
+    "searchEmpty": "「{{query}}」のノートが見つかりません{{scope}}（{{method}}）",
+    "searchResults": "「{{query}}」のノートが {{count}} 件見つかりました{{scope}}（{{method}}）",
+    "searchUnavailable": "検索を利用できません。もう一度お試しください。",
+    "previewUnavailableTitle": "ライブプレビューが停止しました",
+    "previewUnavailableDescription": "録音は続いています。停止後、Nimi が録音全体の文字起こしを試みます。",
+    "speakerRepresentations": "話者の声紋",
+    "speakerMatchingIncomplete": "一部の声を照合できませんでした。元の話者区間は保存されています。ラベルを手動で確認するか、Nimi の話者モデルを確認してください。",
+    "microphoneUnknown": "マイクの許可を確認できません。システム設定をご確認ください。ノートは利用できます。",
+    "restartTitle": "アプリを再起動",
+    "restartDescription": "Nimi がこのアプリを開き直します。録音を停止し、処理を完了してください。",
+    "restartBusy": "アプリを再起動する前に録音を停止し、処理を完了してください。",
+    "businessAIManaged": "Nimi がワークスペースの AI 制限を満たすか確認できません。この管理対象アカウントでは AI を利用できません。ノートと AI を使わない機能は利用できます。",
+    "updatesManaged": "アプリの更新は Nimi で管理します。この開発登録には更新対象のインストール済みパッケージがありません。",
+    "appDataTitle": "アプリのデータ",
+    "appDataDescription": "このアプリの設定、ノート、履歴、録音、検索インデックスを管理します。",
+    "appDataReset": "このアプリのローカル設定、ノート、履歴、録音、検索インデックスを削除します。Nimi のモデルと認証情報は保持されます。",
+    "updatesOpen": "Nimi のアプリ管理を開く",
+    "businessAIUnresolved": "ワークスペースのポリシーを確認できていません。アカウント確認後に再試行してください。ノートは利用できます。",
+    "recordingMedia": {
+      "recording": "録音 {{number}}",
+      "mic": "マイク",
+      "system": "システム音声",
+      "seconds": "{{seconds}} 秒",
+      "status": {
+        "processing": "処理中",
+        "completed": "完了",
+        "canceled": "キャンセル済み",
+        "failed": "失敗",
+        "unknown": "状態不明"
+      },
+      "openFailed": "メディアが見つかりません",
+      "checkFile": "元のファイルがこの端末に残っているか確認してください。",
+      "unavailable": "選択できる元のメディアはありません。"
     }
   }
 }

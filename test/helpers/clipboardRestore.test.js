@@ -72,6 +72,7 @@ function loadClipboardManager({ spawn, accessibility = true, realModifierWait = 
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === "electron") {
       return {
+        app: { isPackaged: false, isReady: () => false },
         clipboard: fakeClipboard,
         systemPreferences: {
           isTrustedAccessibilityClient: () => accessibility,
@@ -80,6 +81,9 @@ function loadClipboardManager({ spawn, accessibility = true, realModifierWait = 
     }
     if (request === "child_process" && spawn) {
       return { ...childProcess, spawn };
+    }
+    if (request === "../utils/process" && spawn) {
+      return { killProcess: (child, signal) => child.kill(signal) };
     }
     return originalLoad.call(this, request, parent, isMain);
   };
@@ -257,45 +261,81 @@ test("pasteText waits for prior clipboard restoration before starting the next p
   assert.deepEqual(events, ["start:first", "end:first", "start:second", "end:second"]);
 });
 
-test("pasteWithFastPaste passes --restore-window <hwnd> when targetWindow is set (#859)", async () => {
-  const spawnCalls = [];
-  const TestClipboardManager = loadClipboardManager({
-    spawn: createSuccessfulSpawn(spawnCalls),
+test("Windows paste binds the captured identity and requires the matching injection receipt", async () => {
+  const calls = [];
+  const Ctor = loadClipboardManager({
+    spawn: createSpawn(calls, [0], { stdout: ["PASTE_SENT 00001A2B3C 42 123456 ctrl+v\n"] }),
   });
-  const manager = new TestClipboardManager();
-  manager._restoreClipboardAfterDelay = () => Promise.resolve();
-
+  const manager = new Ctor();
+  let restored = 0;
+  manager._restoreClipboardAfterDelay = () => {
+    restored++;
+    return Promise.resolve();
+  };
   const result = await manager.pasteWithFastPaste(
     "/tmp/windows-fast-paste.exe",
-    { type: "text", data: "previous clipboard" },
-    // Hex id: the binary prints "TARGET %p" (hex) from --detect-only and parses
-    // --restore-window with strtoull base 16, so the handle stays hex end to end.
-    { expectedClipboardText: "dictated text", targetWindow: "1A2B3C" }
+    { type: "text", data: "prior" },
+    {
+      targetWindow: "1A2B3C",
+      targetProcessId: 42,
+      targetProcessStarted: "123456",
+    }
   );
   await result.restoreComplete;
-
-  assert.equal(spawnCalls.length, 1);
-  assert.equal(spawnCalls[0].command, "/tmp/windows-fast-paste.exe");
-  assert.deepEqual(spawnCalls[0].args, ["--restore-window", "1A2B3C"]);
+  assert.equal(result.pasted, true);
+  assert.equal(restored, 1);
+  assert.deepEqual(calls[0].args, [
+    "--restore-window",
+    "1A2B3C",
+    "--target-pid",
+    "42",
+    "--target-started",
+    "123456",
+  ]);
 });
 
-test("pasteWithFastPaste sends no args when nothing was captured", async () => {
-  const spawnCalls = [];
-  const TestClipboardManager = loadClipboardManager({
-    spawn: createSuccessfulSpawn(spawnCalls),
+test("Windows missing target or helper sends no keyboard input", async () => {
+  const calls = [];
+  const Ctor = loadClipboardManager({ spawn: createSuccessfulSpawn(calls) });
+  const manager = new Ctor();
+  manager.resolveWindowsFastPasteBinary = () => "/tmp/helper.exe";
+  assert.deepEqual(await manager.pasteWindows(null), {
+    pasted: false,
+    reason: "target-unavailable",
   });
-  const manager = new TestClipboardManager();
-  manager._restoreClipboardAfterDelay = () => Promise.resolve();
+  manager.resolveWindowsFastPasteBinary = () => null;
+  assert.deepEqual(await manager.pasteWindows(null), {
+    pasted: false,
+    reason: "paste-helper-unavailable",
+  });
+  assert.deepEqual(calls, []);
+});
 
-  const result = await manager.pasteWithFastPaste(
-    "/tmp/windows-fast-paste.exe",
-    { type: "text", data: "previous clipboard" },
-    { expectedClipboardText: "dictated text" }
-  );
-  await result.restoreComplete;
-
-  assert.equal(spawnCalls.length, 1);
-  assert.deepEqual(spawnCalls[0].args, []);
+test("Windows failed, missing or mismatched injection receipt never falls back or restores final text", async () => {
+  for (const [code, output] of [
+    [5, ""],
+    [0, ""],
+    [0, "PASTE_SENT 1A2B3C 99 123456 ctrl+v\n"],
+  ]) {
+    const calls = [];
+    const Ctor = loadClipboardManager({ spawn: createSpawn(calls, [code], { stdout: [output] }) });
+    const manager = new Ctor();
+    manager._restoreClipboardAfterDelay = () => assert.fail("must retain recovery text");
+    const result = await manager.pasteWithFastPaste(
+      "/tmp/helper.exe",
+      { type: "text", data: "prior" },
+      {
+        targetWindow: "1A2B3C",
+        targetProcessId: 42,
+        targetProcessStarted: "123456",
+      }
+    );
+    await result.restoreComplete;
+    assert.equal(result.pasted, false);
+    assert.equal(result.reason, "paste-injection-failed");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, "/tmp/helper.exe");
+  }
 });
 
 test("Hyprland paste uses the current symbolic shortcut dispatcher", async () => {

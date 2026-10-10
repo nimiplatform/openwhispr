@@ -17,7 +17,7 @@ import { Button } from "../ui/button";
 import { SettingsPanel, SettingsPanelRow, SettingsRow, SectionHeader } from "../ui/SettingsSection";
 import PermissionCard from "../ui/PermissionCard";
 import PromptStudio from "../ui/PromptStudio";
-import InferenceConfigEditor from "./InferenceConfigEditor";
+import NimiAISettings from "./NimiAISettings";
 
 export default function DictationAgentSettings() {
   const { t } = useTranslation();
@@ -169,7 +169,7 @@ export default function DictationAgentSettings() {
         </SettingsPanelRow>
       </SettingsPanel>
 
-      {useDictationAgent && <InferenceConfigEditor scope="dictationAgent" />}
+      {useDictationAgent && <NimiAISettings initialCapability="text.generate" />}
 
       {/* Screen context is a voice-agent sub-feature: hidden when an org
           blocks the agent, since enabling it would grant screen-capture
@@ -199,19 +199,6 @@ export default function DictationAgentSettings() {
                 />
               </SettingsRow>
             </SettingsPanelRow>
-            {screenContextActive && visionOverrideAllowed && (
-              <SettingsPanelRow>
-                <SettingsRow
-                  label={t("dictationAgent.screenContext.visionModel")}
-                  description={t("dictationAgent.screenContext.visionModelDescription")}
-                >
-                  <Toggle
-                    checked={useDictationAgentVisionModel}
-                    onChange={setUseDictationAgentVisionModel}
-                  />
-                </SettingsRow>
-              </SettingsPanelRow>
-            )}
           </SettingsPanel>
           {screenContextActive && isMacOS && !screenGranted && (
             <PermissionCard
@@ -227,9 +214,6 @@ export default function DictationAgentSettings() {
             <p className="text-[11px] text-warning/80 leading-snug">
               {t("dictationAgent.screenContext.relaunchHint")}
             </p>
-          )}
-          {screenContextActive && visionOverrideAllowed && useDictationAgentVisionModel && (
-            <InferenceConfigEditor scope="dictationAgentVision" allowedModes={["providers"]} />
           )}
         </div>
       )}

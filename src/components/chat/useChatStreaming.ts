@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import ReasoningService, { type AgentStreamChunk } from "../../services/ReasoningService";
+import { searchNimiNotes } from "../../services/nimiNotes";
 import { isEnterpriseProvider } from "../../models/ModelRegistry";
-import { providerSupportsImages } from "../../services/ai/inferenceProviders";
 import { getSettings, useSettingsStore } from "../../stores/settingsStore";
 import { resolveChatStreamingInference } from "../../helpers/dictationAgentInference.js";
 import { describeProviderError } from "../../utils/describeProviderError";
@@ -79,25 +79,25 @@ async function buildNoteAttendeesContext(
   }
 }
 
-async function buildRAGContext(userText: string, scope?: ContainerScope): Promise<string> {
-  if (!window.electronAPI?.semanticSearchNotes) return "";
+async function buildRAGContext(
+  userText: string,
+  scope?: ContainerScope,
+  signal?: AbortSignal
+): Promise<string> {
   try {
-    const results = await window.electronAPI.semanticSearchNotes(
+    const { notes: results } = await searchNimiNotes(
       userText,
       RAG_NOTE_LIMIT,
       scope?.spaceId ?? null,
-      scope?.folderId ?? null
+      scope?.folderId ?? null,
+      signal
     );
     if (!results || results.length === 0) return "";
 
-    const snippets = await Promise.all(
-      results.map(async (r: { id: number; title: string; score?: number }) => {
-        const note = await window.electronAPI.getNote(r.id);
-        if (!note) return null;
-        const content = (note.content || "").slice(0, RAG_NOTE_SNIPPET_LENGTH);
-        return `<note id="${note.id}" title="${note.title}">\n${content}\n</note>`;
-      })
-    );
+    const snippets = results.map((note) => {
+      const content = (note.content || "").slice(0, RAG_NOTE_SNIPPET_LENGTH);
+      return `<note id="${note.id}" title="${note.title}">\n${content}\n</note>`;
+    });
 
     return snippets.filter(Boolean).join("\n\n");
   } catch {
@@ -138,7 +138,12 @@ interface UseChatStreamingOptions {
    * only in a send that offers connector tools, so recipients come from them.
    */
   noteMeeting?: NoteAttendeesRequest;
-  onStreamComplete?: (assistantId: string, content: string, toolCalls?: ToolCallInfo[]) => void;
+  onStreamComplete?: (
+    assistantId: string,
+    content: string,
+    toolCalls?: ToolCallInfo[],
+    nimiTranscript?: import("ai").ModelMessage[]
+  ) => void | Promise<void>;
   /** Fires exactly once when displayable assistant content or tool activity becomes available. */
   onResponseContent?: () => void;
 }
@@ -180,11 +185,12 @@ export interface ChatStreaming {
 // Walks backward to the newest user message; a null transform keeps walking.
 function transformLastUserMessage(
   history: HistoryMessage[],
-  transform: (message: HistoryMessage) => HistoryMessage | null
+  transform: (message: Extract<HistoryMessage, { role: "user" }>) => HistoryMessage | null
 ): void {
   for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i].role !== "user") continue;
-    const replacement = transform(history[i]);
+    const message = history[i];
+    if (message.role !== "user") continue;
+    const replacement = transform(message);
     if (replacement === null) continue;
     history[i] = replacement;
     break;
@@ -330,61 +336,11 @@ export function useChatStreaming({
           if (!options?.suppressResponseContent) onResponseContent?.();
         };
         const settings = getSettings();
-        const { config: llmConfig, attachScreenContext } = resolveChatStreamingInference(settings, {
-          inferenceScope,
-          hasScreenContext: !!options?.attachment,
-          isProviderImageWired: providerSupportsImages,
-        });
-        const requestedAttachment = attachScreenContext ? (options?.attachment ?? null) : null;
-        const llmMode = llmConfig.mode || "openwhispr";
-        const policyState = usePolicyStore.getState();
-        const policyProvider =
-          llmMode === "openwhispr"
-            ? "openwhispr"
-            : llmMode === "local"
-              ? "local"
-              : llmConfig.provider;
-        if (
-          !isAgentAllowed(policyState) ||
-          !isLlmSelectionAllowed(policyState, { mode: llmMode, provider: policyProvider })
-        ) {
-          // The user message is already appended; answer it instead of dead-ending silently.
-          const restriction = !isAgentAllowed(policyState)
-            ? t("common.policyAgentRestricted")
-            : t("common.policyAiProcessingRestricted");
-          announceResponse();
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: restriction,
-              isStreaming: false,
-            },
-          ]);
-          return;
-        }
-
+        const requestedAttachment = options?.attachment ?? null;
+        if (!isAgentAllowed(usePolicyStore.getState()))
+          throw new Error(t("common.policyAgentRestricted"));
         setAgentState("thinking");
-        const isCloudAgent = llmMode === "openwhispr" && settings.isSignedIn;
-        const isLanAgent = llmMode === "self-hosted" && !!llmConfig.remoteUrl;
-        const isCustomAgent = llmMode === "providers" && llmConfig.provider === "custom";
-        const isLocalProvider =
-          !isEnterpriseProvider(llmConfig.provider) &&
-          ![
-            "openai",
-            "groq",
-            "custom",
-            "anthropic",
-            "gemini",
-            "tinfoil",
-            "openrouter",
-            "corti",
-          ].includes(llmConfig.provider);
-        const localModelCanUseTool =
-          isLocalProvider && estimateModelSizeB(llmConfig.model) >= LOCAL_TOOL_MIN_PARAMS_B;
-        const supportsTools = isCloudAgent || !isLocalProvider || localModelCanUseTool;
-
+        const supportsTools = true;
         const scope = searchScopeRef.current;
         const policy = usePolicyStore.getState();
         // The calendar tool reads the shared provider-deduped events table,
@@ -462,7 +418,7 @@ export function useChatStreaming({
 
         // A note action is about the note in context; other notes would only add noise.
         const [ragContext, attendeesContext] = await Promise.all([
-          options?.requestText ? "" : buildRAGContext(userText, scope),
+          options?.requestText ? "" : buildRAGContext(userText, scope, toolScope.signal),
           connectorsOffered ? buildNoteAttendeesContext(noteMeetingRef.current) : "",
         ]);
         if (cancelled() || !mountedRef.current) return;
@@ -509,11 +465,7 @@ export function useChatStreaming({
         // field the server vision-routes (older servers strip the unknown field,
         // which degrades to a plain command). A dropped one costs nothing but the
         // image — the command still runs.
-        const attachment = requestedAttachment && !isCloudAgent ? requestedAttachment : null;
-        const cloudScreenContext =
-          requestedAttachment && isCloudAgent
-            ? { data: requestedAttachment.image, mediaType: requestedAttachment.mediaType }
-            : null;
+        const attachment = requestedAttachment;
         if (attachment) {
           // The screenshot needs its grounding instruction, exactly like the
           // dictation path pairs the suffix with an attached image. Restore it
@@ -566,93 +518,31 @@ export function useChatStreaming({
 
         try {
           let stream: AsyncGenerator<AgentStreamChunk>;
+          let nimiTranscript: import("ai").ModelMessage[] | undefined;
           // Each call's own step text on the AI SDK path, whose tool results
           // carry only the model-facing output (the cloud path yields it).
           const toolDisplayTexts = new Map<string, string>();
 
-          if (isCloudAgent) {
-            const executeToolCall = registry
-              ? async (name: string, argsJson: string, toolCallId: string) => {
-                  const tool = registry.get(name);
-                  if (!tool)
-                    return {
-                      data: `Unknown tool: ${name}`,
-                      displayText: t("agentMode.tools.unknownTool", { name }),
-                    };
-                  let args: Record<string, unknown>;
-                  try {
-                    args = JSON.parse(argsJson);
-                  } catch {
-                    return {
-                      data: `Invalid tool arguments for ${name}`,
-                      displayText: t("agentMode.tools.invalidArgs", { name }),
-                    };
-                  }
-                  const result = await executeTool(
-                    tool,
-                    args,
-                    toolScope.createContext({ messageId: assistantId, toolCallId })
-                  );
-                  const data = result.success
-                    ? typeof result.data === "string"
-                      ? result.data
-                      : JSON.stringify(result.data)
-                    : result.displayText;
-                  const metadata =
-                    result.success && result.data && typeof result.data === "object"
-                      ? (result.data as Record<string, unknown> | Array<Record<string, unknown>>)
-                      : undefined;
-                  return { data, displayText: result.displayText, metadata };
-                }
-              : undefined;
-
-            stream = ReasoningService.processTextStreamingCloud(llmMessages, {
-              systemPrompt,
-              tools: registry?.getAll().map((t) => ({
-                name: t.name,
-                description: t.description,
-                parameters: t.parameters,
-              })),
-              executeToolCall,
-              ...(cloudScreenContext ? { screenContext: cloudScreenContext } : {}),
-            });
-          } else {
-            const aiTools = registry?.toAISDKFormat(
-              (toolCallId, abortSignal) =>
-                toolScope.createContext({
-                  messageId: assistantId,
-                  toolCallId,
-                  signal: abortSignal,
-                }),
-              (id, text) => toolDisplayTexts.set(id, text)
-            );
-            stream = ReasoningService.processTextStreamingAI(
-              llmMessages,
-              llmConfig.model,
-              llmConfig.provider,
-              {
-                systemPrompt,
-                // Policy and managed enforcement judge the scope that actually
-                // answers: the panel's Chat fallback as Chat, and the vision
-                // override as the agent scope whose image lane it is.
-                inferenceScope:
-                  llmConfig.scope === "dictationAgentVision" ? "dictationAgent" : llmConfig.scope,
-                lanUrl: isLanAgent ? llmConfig.remoteUrl : undefined,
-                baseUrl: isCustomAgent ? llmConfig.cloudBaseUrl || undefined : undefined,
-                customApiKey:
-                  isCustomAgent || isLanAgent ? llmConfig.customApiKey || undefined : undefined,
-                disableThinking: llmConfig.disableThinking,
-              },
-              aiTools
-            );
-          }
+          const aiTools = registry?.toAISDKFormat(
+            (toolCallId, abortSignal) =>
+              toolScope.createContext({ messageId: assistantId, toolCallId, signal: abortSignal }),
+            (id, text) => toolDisplayTexts.set(id, text)
+          );
+          stream = ReasoningService.processTextStreamingAI(llmMessages, { systemPrompt }, aiTools);
 
           for await (const chunk of stream) {
             if (!mountedRef.current) {
               ReasoningService.cancelActiveStream();
               break;
             }
-            if (chunk.type === "content") {
+            if (chunk.type === "transcript") {
+              nimiTranscript = chunk.messages;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, nimiTranscript: chunk.messages } : m
+                )
+              );
+            } else if (chunk.type === "content") {
               rawContent += chunk.text;
               fullContent = withoutEchoedToolTrace(rawContent);
               if (fullContent) announceResponse();
@@ -729,7 +619,12 @@ export function useChatStreaming({
             const explicitlyCancelled = explicitCancelGenerationRef.current > sendGeneration;
             if (!explicitlyCancelled && fullContent.trim().length > 0) {
               const finalMsg = messagesRef.current.find((m) => m.id === assistantId);
-              onStreamComplete?.(assistantId, fullContent, finalMsg?.toolCalls);
+              await onStreamComplete?.(
+                assistantId,
+                fullContent,
+                finalMsg?.toolCalls,
+                nimiTranscript
+              );
             }
             return;
           }
@@ -753,7 +648,7 @@ export function useChatStreaming({
           );
 
           const finalMsg = messagesRef.current.find((m) => m.id === assistantId);
-          onStreamComplete?.(assistantId, fullContent, finalMsg?.toolCalls);
+          await onStreamComplete?.(assistantId, fullContent, finalMsg?.toolCalls, nimiTranscript);
           if (hasDeliverableContent) {
             await options?.onComplete?.({
               assistantId,
@@ -774,11 +669,11 @@ export function useChatStreaming({
             logger.error(
               "Assistant request failed",
               {
-                scope: llmConfig.scope,
-                mode: llmMode,
-                provider: llmConfig.provider,
-                model: llmConfig.model,
-                attachScreenContext,
+                scope: inferenceScope,
+                mode: "nimi-app",
+                provider: "nimi",
+                model: null,
+                attachScreenContext: Boolean(requestedAttachment),
                 error: (error as Error).message,
               },
               "reasoning"

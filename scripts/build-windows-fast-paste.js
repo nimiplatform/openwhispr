@@ -1,229 +1,105 @@
 #!/usr/bin/env node
-/**
- * Ensures the Windows fast-paste binary is available.
- *
- * Strategy:
- * 1. If binary exists and is up-to-date, do nothing
- * 2. Try to download prebuilt binary from GitHub releases
- * 3. Fall back to local compilation if download fails
- *
- * This allows developers without a C compiler to still build the app.
- */
-
+// Build changed native source locally; never replace it with an older release helper.
 const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const isWindows = process.platform === "win32";
-if (!isWindows) {
-  // Only needed on Windows
-  process.exit(0);
-}
+if (process.platform !== "win32") process.exit(0);
+const root = path.resolve(__dirname, "..");
+const source = path.join(root, "resources", "windows-fast-paste.c");
+const output = path.join(root, "resources", "bin", "windows-fast-paste.exe");
+const objects = path.join(root, ".nimi", "local", "windows-fast-paste");
+const required = ["paste-v1", "selection-copy-v1", "target-identity-v2", "focus-restore-v2"];
 
-const projectRoot = path.resolve(__dirname, "..");
-const cSource = path.join(projectRoot, "resources", "windows-fast-paste.c");
-const outputDir = path.join(projectRoot, "resources", "bin");
-const outputBinary = path.join(outputDir, "windows-fast-paste.exe");
-
-function log(message) {
-  console.log(`[windows-fast-paste] ${message}`);
-}
-
-function ensureDir(dirPath) {
-  if (!fs.existsSync(dirPath)) {
-    fs.mkdirSync(dirPath, { recursive: true });
-  }
-}
-
-function isBinaryUpToDate() {
-  if (!fs.existsSync(outputBinary)) {
-    return false;
-  }
-
-  if (!fs.existsSync(cSource)) {
-    return true;
-  }
-
-  try {
-    const binaryStat = fs.statSync(outputBinary);
-    const sourceStat = fs.statSync(cSource);
-    return binaryStat.mtimeMs >= sourceStat.mtimeMs && supportsSelectionCopy(outputBinary);
-  } catch {
-    return false;
-  }
-}
-
-function supportsSelectionCopy(binaryPath) {
-  // The capability probe executes the binary, which is only possible on
-  // Windows itself; when cross-packaging, trust the downloaded artifact.
-  if (process.platform !== "win32") {
-    return true;
-  }
-  try {
-    const result = spawnSync(binaryPath, ["--capabilities"], {
-      stdio: "pipe",
-      windowsHide: true,
-    });
-    return result.status === 0 && result.stdout.toString().includes("selection-copy-v1");
-  } catch {
-    return false;
-  }
-}
-
-// A stale binary must never linger at the output path: packaging would ship
-// it, and its missing selection-copy support silently disables selection
-// editing at runtime.
-function discardStaleBinary(reason) {
-  try {
-    fs.rmSync(outputBinary, { force: true });
-    log(reason);
-  } catch {}
-}
-
-async function tryDownload() {
-  log("Attempting to download prebuilt binary...");
-
-  const downloadScript = path.join(__dirname, "download-windows-fast-paste.js");
-  if (!fs.existsSync(downloadScript)) {
-    log("Download script not found, skipping download");
-    return false;
-  }
-
-  const result = spawnSync(process.execPath, [downloadScript, "--force"], {
-    stdio: "inherit",
-    cwd: projectRoot,
+function compatible() {
+  if (!fs.existsSync(output)) return false;
+  const result = spawnSync(output, ["--capabilities"], {
+    windowsHide: true,
+    encoding: "utf8",
+    timeout: 1500,
   });
+  const capabilities = (result.stdout || "").trim().split(/\s+/);
+  return result.status === 0 && required.every((value) => capabilities.includes(value));
+}
 
-  if (result.status === 0 && fs.existsSync(outputBinary)) {
-    if (supportsSelectionCopy(outputBinary)) {
-      log("Successfully downloaded prebuilt binary");
-      return true;
-    }
-    discardStaleBinary(
-      "Discarded prebuilt binary without selection-copy-v1 support; compiling locally"
+function quote(value) {
+  if (/["\r\n%]/.test(value)) throw new Error("Unsupported compiler path");
+  return '"' + value + '"';
+}
+
+function compile() {
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  fs.mkdirSync(objects, { recursive: true });
+  const clCommand =
+    "cl /O2 /utf-8 /nologo " +
+    quote(source) +
+    " /Fo:" +
+    quote(path.join(objects, "windows-fast-paste.obj")) +
+    " /Fe:" +
+    quote(output) +
+    " user32.lib";
+  const candidates = [{ command: "cmd.exe", args: ["/d", "/s", "/c", clCommand] }];
+  const vswhere = path.join(
+    process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+    "Microsoft Visual Studio",
+    "Installer",
+    "vswhere.exe"
+  );
+  if (fs.existsSync(vswhere)) {
+    const discovery = spawnSync(
+      vswhere,
+      [
+        "-latest",
+        "-products",
+        "*",
+        "-requires",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "-property",
+        "installationPath",
+      ],
+      { encoding: "utf8", windowsHide: true }
     );
-    return false;
+    const installation = discovery.status === 0 ? discovery.stdout.trim() : "";
+    const devcmd = installation && path.join(installation, "Common7", "Tools", "VsDevCmd.bat");
+    if (devcmd && fs.existsSync(devcmd))
+      candidates.unshift({
+        command: "cmd.exe",
+        args: [
+          "/d",
+          "/s",
+          "/c",
+          "call " + quote(devcmd) + " -arch=x64 -host_arch=x64 && " + clCommand,
+        ],
+      });
   }
-
-  log("Download failed or binary not found after download");
-  return false;
-}
-
-/**
- * Quote a path for use in shell commands on Windows.
- * @param {string} p - Path to quote
- * @returns {string} - Quoted path safe for shell use
- */
-function quotePath(p) {
-  return `"${p.replace(/"/g, '\\"')}"`;
-}
-
-function tryCompile() {
-  if (!fs.existsSync(cSource)) {
-    log("C source not found, cannot compile locally");
-    return false;
-  }
-
-  log("Attempting local compilation...");
-
-  const compilers = [
-    {
-      name: "MSVC",
-      check: { command: "cl", args: [] },
-      useShell: true,
-      getCommand: () =>
-        `cl /O2 /nologo ${quotePath(cSource)} /Fe:${quotePath(outputBinary)} user32.lib`,
-    },
-    {
-      name: "MinGW-w64",
-      check: { command: "gcc", args: ["--version"] },
-      useShell: false,
-      command: "gcc",
-      args: ["-O2", cSource, "-o", outputBinary, "-luser32"],
-    },
-    {
-      name: "Clang",
-      check: { command: "clang", args: ["--version"] },
-      useShell: false,
-      command: "clang",
-      args: ["-O2", cSource, "-o", outputBinary, "-luser32"],
-    },
-  ];
-
-  for (const compiler of compilers) {
-    log(`Trying ${compiler.name}...`);
-
-    const checkResult = spawnSync(compiler.check.command, compiler.check.args, {
-      stdio: "pipe",
-      shell: true,
+  for (const command of ["gcc", "clang"])
+    candidates.push({ command, args: ["-O2", source, "-o", output, "-luser32"] });
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate.command, candidate.args, {
+      cwd: root,
+      windowsHide: true,
+      windowsVerbatimArguments: candidate.command === "cmd.exe",
+      stdio: "inherit",
     });
-
-    if (checkResult.status !== 0 && checkResult.error) {
-      log(`${compiler.name} not found, trying next...`);
-      continue;
-    }
-
-    let result;
-    if (compiler.useShell) {
-      const cmd = compiler.getCommand();
-      log(`Compiling with: ${cmd}`);
-      result = spawnSync(cmd, [], {
-        stdio: "inherit",
-        cwd: projectRoot,
-        shell: true,
-      });
-    } else {
-      log(`Compiling with: ${compiler.command} ${compiler.args.join(" ")}`);
-      result = spawnSync(compiler.command, compiler.args, {
-        stdio: "inherit",
-        cwd: projectRoot,
-        shell: false,
-      });
-    }
-
-    if (result.status === 0 && fs.existsSync(outputBinary)) {
-      if (supportsSelectionCopy(outputBinary)) {
-        log(`Successfully built with ${compiler.name}`);
-        return true;
-      }
-      discardStaleBinary(`Binary built with ${compiler.name} lacks selection-copy-v1; discarded`);
-    }
-
-    log(`${compiler.name} compilation failed, trying next...`);
+    if (result.status === 0 && compatible()) return;
   }
-
-  return false;
-}
-
-async function main() {
-  ensureDir(outputDir);
-
-  if (isBinaryUpToDate()) {
-    log("Binary is up to date, skipping build");
-    return;
-  }
-
-  const downloaded = await tryDownload();
-  if (downloaded) {
-    return;
-  }
-
-  const compiled = tryCompile();
-  if (compiled) {
-    return;
-  }
-
-  if (fs.existsSync(outputBinary) && !supportsSelectionCopy(outputBinary)) {
-    discardStaleBinary("Removed stale fast-paste binary so packaging cannot ship it");
-  }
-
-  console.warn("[windows-fast-paste] Could not obtain Windows fast-paste binary.");
-  console.warn(
-    "[windows-fast-paste] Windows paste will use nircmd/PowerShell fallback; selection editing will type at the cursor."
+  throw new Error(
+    "Could not build the target-validated Windows paste helper. Install MSVC, MinGW-w64 or Clang and rerun compile:winpaste."
   );
 }
 
-main().catch((error) => {
-  console.error("[windows-fast-paste] Unexpected error:", error);
-  // Don't fail the build
-});
+try {
+  if (
+    compatible() &&
+    (!fs.existsSync(source) || fs.statSync(output).mtimeMs >= fs.statSync(source).mtimeMs)
+  ) {
+    console.log("[windows-fast-paste] Target-validated helper is up to date");
+  } else {
+    if (!fs.existsSync(source)) throw new Error("Windows paste source is missing");
+    compile();
+    console.log("[windows-fast-paste] Built target-validated helper from local source");
+  }
+} catch (error) {
+  console.error("[windows-fast-paste] " + error.message);
+  process.exitCode = 1;
+}

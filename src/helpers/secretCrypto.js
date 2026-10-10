@@ -1,3 +1,4 @@
+const { getAppDataDirectory } = require("./appData");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -16,7 +17,7 @@ let mode = null;
 let masterKey = null;
 
 function _backupPath() {
-  return path.join(app.getPath("userData"), "secure-keys", BACKUP_FILE);
+  return path.join(getAppDataDirectory(), "secure-keys", BACKUP_FILE);
 }
 
 function _saveMasterKeyBackup() {

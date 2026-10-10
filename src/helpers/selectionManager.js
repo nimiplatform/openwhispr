@@ -136,6 +136,15 @@ class SelectionManager {
     // only the latest probe's result may land in lastTarget.
     if (this._captureTargetPromise === probe) {
       this.lastTarget = target;
+      debugLogger.debug(
+        "Windows dictation target captured",
+        {
+          kind: target?.kind ?? null,
+          id: target?.id ?? null,
+          pid: target?.processId ?? null,
+        },
+        "clipboard"
+      );
       this._lastTargetCaptureAt = this.now();
       this._captureTargetPromise = null;
     }
@@ -151,6 +160,8 @@ class SelectionManager {
         ? {
             kind: "win-hwnd",
             id: match[1],
+            processId: Number(result.stdout.match(/^TARGET_PID (\d+)$/m)?.[1]) || null,
+            processStarted: result.stdout.match(/^TARGET_STARTED (\d+)$/m)?.[1] || null,
             windowClass: result.stdout.match(/^WINDOW_CLASS (.+)$/m)?.[1]?.trim() || null,
             exeName: result.stdout.match(/^EXE_NAME (.+)$/m)?.[1]?.trim() || null,
             isTerminal: /^IS_TERMINAL true$/m.test(result.stdout),
@@ -264,6 +275,13 @@ class SelectionManager {
         const pasteResult = await this.clipboardManager._pasteText(replacement, {
           ...options,
           restoreClipboard: options.restoreClipboard !== false,
+          ...(session.target?.kind === "win-hwnd"
+            ? {
+                targetWindow: session.target.id,
+                targetProcessId: session.target.processId,
+                targetProcessStarted: session.target.processStarted,
+              }
+            : {}),
         });
         await pasteResult?.restoreComplete;
         if (pasteResult?.pasted === false) {
@@ -313,7 +331,13 @@ class SelectionManager {
         const pasteResult = await this.clipboardManager._pasteText(text, {
           ...options,
           restoreClipboard: options.restoreClipboard !== false,
-          ...(session.target?.kind === "win-hwnd" ? { targetWindow: session.target.id } : {}),
+          ...(session.target?.kind === "win-hwnd"
+            ? {
+                targetWindow: session.target.id,
+                targetProcessId: session.target.processId,
+                targetProcessStarted: session.target.processStarted,
+              }
+            : {}),
         });
         await pasteResult?.restoreComplete;
         if (pasteResult?.pasted === false) {

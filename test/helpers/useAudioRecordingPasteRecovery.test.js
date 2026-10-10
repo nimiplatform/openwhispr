@@ -344,3 +344,129 @@ test("completed batch and streaming dictations are saved when automatic paste is
   }
   assert.equal(h.manager.saves, 2);
 });
+
+test("target delivery failure keeps exact final text and retries paste without recording", async (t) => {
+  const h = await mount(t);
+  h.settings.setState({ autoPasteEnabled: true });
+  let attempts = 0;
+  h.manager.safePaste = async (text) => {
+    assert.equal(text, finalText);
+    attempts++;
+    return attempts === 1 ? { pasted: false, reason: "target-unavailable" } : { pasted: true };
+  };
+  await React.act(async () =>
+    h.manager.callbacks.onTranscriptionComplete({
+      success: true,
+      text: finalText,
+      rawText: "different raw words",
+      source: "nimi",
+    })
+  );
+  const card = h.toasts.at(-1);
+  assert.equal(card.title, "Text was not delivered");
+  assert.match(card.description, /original editor/);
+  assert.doesNotMatch(card.description, /history/);
+  assert.deepEqual(h.writes, [finalText]);
+  card.actions[1].onClick();
+  assert.deepEqual(h.shown, [finalText]);
+  await React.act(async () => card.actions[0].onClick());
+  assert.equal(attempts, 2);
+  assert.equal(h.manager.starts, 0);
+  assert.equal(h.manager.saves, 1);
+});
+
+test("clipboard failure still exposes the final result without promising saved history", async (t) => {
+  const h = await mount(t);
+  h.settings.setState({ autoPasteEnabled: true });
+  h.api.writeClipboard = async () => ({ success: false });
+  h.manager.safePaste = async () => ({ pasted: false, reason: "target-focus-lost" });
+  await React.act(async () =>
+    h.manager.callbacks.onTranscriptionComplete({
+      success: true,
+      text: finalText,
+      rawText: "raw input",
+      source: "nimi",
+    })
+  );
+  const card = h.toasts.at(-1);
+  assert.match(card.description, /Clipboard copying also failed/);
+  card.actions[1].onClick();
+  assert.deepEqual(h.shown, [finalText]);
+});
+
+test("connection failure offers connection checking instead of asking for another recording", async (t) => {
+  const h = await mount(t);
+  const sections = [];
+  h.api.openSettingsSection = async (section) => {
+    sections.push(section);
+    return { success: true };
+  };
+  await h.error({
+    title: "Transcription Error",
+    code: "NIMI_SESSION_UNAVAILABLE",
+    messageKey: "nimi.sessionConnectionUnavailable",
+    messageParams: { reason: "runtime-service-unavailable" },
+    settingsTarget: "speechToText",
+    technicalDetails: { underlyingError: "runtime-service-unavailable" },
+  });
+  const card = h.toasts.at(-1);
+  assert.equal(card.title, "Nimi connection unavailable");
+  assert.match(card.description, /runtime-service-unavailable/);
+  assert.match(card.description, /retained/);
+  assert.doesNotMatch(card.description, /sign in|login/i);
+  assert.equal(card.actions[0].label, "Check connection");
+  await card.actions[0].onClick();
+  assert.deepEqual(sections, ["speechToText"]);
+  assert.equal(h.manager.starts, 0);
+});
+
+test("an old Cancel failure uses a standard notice and leaves the new busy preview and recovery card alone", async (t) => {
+  const h = await mount(t);
+  h.manager.getRecordingAudioLevel = () => 0;
+  await React.act(async () =>
+    h.manager.callbacks.onStateChange({ isRecording: true, isProcessing: false })
+  );
+  const hidden = h.hidden.length,
+    dismissed = h.dismissed.length;
+  await h.error({
+    title: "Cancellation",
+    description: "Old stop unconfirmed",
+    audioCancellationFailed: true,
+    code: "host-internal-error",
+    reasonCode: "CANCEL_REFUSED",
+    details: { jobId: "old-job", clientSubmissionId: "old-action" },
+  });
+  assert.equal(h.recording().isRecording, true);
+  assert.equal(h.hidden.length, hidden);
+  assert.equal(h.dismissed.length, dismissed);
+  const notice = h.toasts.at(-1);
+  assert.equal(notice.presentation, undefined);
+  assert.equal(notice.technicalDetails.requestId, "old-action");
+  assert.match(notice.technicalDetails.underlyingError, /old-job/);
+  assert.equal(notice.description, "Old stop unconfirmed");
+});
+
+test("a late Cancel refusal cannot reset a new capture's preparing state", async (t) => {
+  const h = await mount(t);
+  const start = deferred();
+  h.manager.startRecording = () => start.promise;
+  let pending;
+  await React.act(async () => {
+    pending = h.recording().startRecording();
+    await new Promise(setImmediate);
+  });
+  assert.equal(h.recording().isPreparing, true);
+  const hidden = h.hidden.length;
+  await h.error({
+    title: "Cancellation",
+    description: "Old Cancel refused",
+    audioCancellationFailed: true,
+    details: { jobId: "old-job", clientSubmissionId: "old-action" },
+  });
+  assert.equal(h.recording().isPreparing, true);
+  assert.equal(h.hidden.length, hidden);
+  await React.act(async () => {
+    start.resolve(true);
+    await pending;
+  });
+});

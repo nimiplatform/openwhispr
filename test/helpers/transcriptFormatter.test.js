@@ -9,6 +9,113 @@ const {
 } = require("../../src/helpers/transcriptFormatter");
 const { changeLanguage } = require("../../src/helpers/i18nMain");
 
+test("mixed note exports retain both bodies and source clocks; subtitles select actual media", () => {
+  const { note, imported, recorded } = require("../lib/mixedTranscriptFixture")();
+  const units = [imported[0], ...recorded, imported[1]];
+  const snapshot = JSON.stringify(units);
+  for (const format of [formatTxt, formatMd]) {
+    const output = format(note, units, {});
+    assert.match(output, /Hello, world!/);
+    assert.match(output, /新发言。/);
+    assert.match(output, /New reply\./);
+    assert.ok(output.indexOf("Hello, world!") < output.indexOf("新发言。"));
+    assert.match(output, /Recording 1/);
+    assert.match(output, /Canceled/);
+    assert.match(output, /00:00:01/);
+  }
+  const json = JSON.parse(formatJson(note, units, {}));
+  assert.equal(
+    json.metadata.duration_seconds,
+    null,
+    "independent files have no invented total timeline"
+  );
+  assert.deepEqual(
+    json.media.map((m) => m.duration_seconds),
+    [305, 2, 3]
+  );
+  assert.deepEqual(
+    json.segments.map((s) => s.text),
+    ["Hello, world!", "新发言。", "New reply."]
+  );
+  assert.deepEqual(
+    json.segments.map((s) => s.timestamp),
+    [2.3, 1, 2.5]
+  );
+  assert.throws(() => formatSrt(units, {}, note), /Choose one media/);
+  const original = formatSrt(units, {}, note, { type: "original" });
+  assert.match(original, /00:00:02,300 --> 00:00:02,710/);
+  assert.match(original, /00:05:04,000 --> 00:05:04,400/);
+  assert.doesNotMatch(original, /新发言|New reply/);
+  const live = formatSrt(units, {}, note, {
+    type: "recording",
+    sessionId: "live-session",
+    source: "mic",
+  });
+  assert.match(live, /00:00:01,000 --> 00:00:01,800/);
+  assert.match(live, /新发言。/);
+  assert.doesNotMatch(live, /Hello|New reply/);
+  assert.equal(JSON.stringify(units), snapshot);
+  const badNote = { ...note, source_media: { ...note.source_media, recordings: [] } };
+  assert.throws(
+    () =>
+      formatSrt(units, {}, badNote, {
+        type: "recording",
+        sessionId: "live-session",
+        source: "mic",
+      }),
+    /no transcript/
+  );
+});
+
+test("imported alignment retains silence before the first word and measured cue ends", () => {
+  const origin = 1791400000000;
+  const result = formatSrt(
+    [
+      { timestamp: origin + 2300, endTimestamp: origin + 2710, text: "你" },
+      { timestamp: origin + 2810, endTimestamp: origin + 3210, text: "好。" },
+    ],
+    {},
+    { source_media: { transcriptOriginMs: origin } }
+  );
+  assert.match(result, /00:00:02,300 --> 00:00:03,210\n你好。/);
+  assert.throws(
+    () => formatSrt([{ timestamp: 0, text: "missing alignment" }], {}),
+    /actual alignment end times/
+  );
+});
+
+test("continuous Chinese alignment produces bounded cues without losing or repeating text", () => {
+  const words = Array.from({ length: 180 }, (_, index) => ({
+    timestamp: index * 0.5,
+    endTimestamp: index * 0.5 + 0.4,
+    text: "文",
+  }));
+  const output = formatSrt(words, {});
+  const cues = output.trim().split("\n\n");
+  assert.ok(cues.length >= 15);
+  assert.equal(cues.map((cue) => cue.split("\n").slice(2).join("\n")).join(""), "文".repeat(180));
+  for (const cue of cues) assert.ok(Array.from(cue.split("\n").slice(2).join("\n")).length <= 64);
+});
+
+test("JSON keeps missing end times and duration unknown", () => {
+  const output = JSON.parse(
+    formatJson(
+      { title: "unknown" },
+      [{ text: "A complete phrase", timestamp: 4, source: "mic" }],
+      {}
+    )
+  );
+  assert.equal(output.segments[0].endTimestamp, undefined);
+  assert.equal(output.metadata.duration_seconds, null);
+});
+
+test("a valid long atomic alignment unit retains its true span and complete text", () => {
+  const text = "長".repeat(150);
+  const output = formatSrt([{ timestamp: 2, endTimestamp: 15, text }], {});
+  assert.match(output, /00:00:02,000 --> 00:00:15,000/);
+  assert.equal(output.trim().split("\n").slice(2).join(""), text);
+});
+
 test("TXT and Markdown exports include participant display names", () => {
   const note = {
     title: "Planning",
@@ -39,9 +146,9 @@ test("participants without a display name fall back to their email", () => {
 test("merged same-speaker SRT cues keep the first segment's start time", () => {
   const output = formatSrt(
     [
-      { speaker: "speaker_0", timestamp: 0.25, text: "Opening sentence." },
-      { speaker: "speaker_0", timestamp: 1.75, text: "Continuation." },
-      { speaker: "speaker_1", timestamp: 4, text: "Reply." },
+      { speaker: "speaker_0", timestamp: 0.25, endTimestamp: 4, text: "Opening sentence." },
+      { speaker: "speaker_0", timestamp: 1.75, endTimestamp: 4, text: "Continuation." },
+      { speaker: "speaker_1", timestamp: 4, endTimestamp: 7, text: "Reply." },
     ],
     {}
   );
@@ -52,10 +159,10 @@ test("merged same-speaker SRT cues keep the first segment's start time", () => {
 test("same-speaker merging still uses the latest segment for the rolling gap", () => {
   const output = formatSrt(
     [
-      { speaker: "speaker_0", timestamp: 0, text: "One." },
-      { speaker: "speaker_0", timestamp: 1.5, text: "Two." },
-      { speaker: "speaker_0", timestamp: 3, text: "Three." },
-      { speaker: "speaker_1", timestamp: 6, text: "Reply." },
+      { speaker: "speaker_0", timestamp: 0, endTimestamp: 2, text: "One." },
+      { speaker: "speaker_0", timestamp: 1.5, endTimestamp: 3, text: "Two." },
+      { speaker: "speaker_0", timestamp: 3, endTimestamp: 6, text: "Three." },
+      { speaker: "speaker_1", timestamp: 6, endTimestamp: 9, text: "Reply." },
     ],
     {}
   );
@@ -66,8 +173,8 @@ test("same-speaker merging still uses the latest segment for the rolling gap", (
 test("same-speaker segments at the merge threshold remain separate cues", () => {
   const output = formatSrt(
     [
-      { speaker: "speaker_0", timestamp: 0, text: "First." },
-      { speaker: "speaker_0", timestamp: 2, text: "Second." },
+      { speaker: "speaker_0", timestamp: 0, endTimestamp: 2, text: "First." },
+      { speaker: "speaker_0", timestamp: 2, endTimestamp: 5, text: "Second." },
     ],
     {}
   );
@@ -79,9 +186,9 @@ test("same-speaker segments at the merge threshold remain separate cues", () => 
 test("the final merged SRT cue ends relative to its last segment, not its first", () => {
   const output = formatSrt(
     [
-      { speaker: "speaker_0", timestamp: 0, text: "One." },
-      { speaker: "speaker_0", timestamp: 1.5, text: "Two." },
-      { speaker: "speaker_0", timestamp: 3, text: "Three." },
+      { speaker: "speaker_0", timestamp: 0, endTimestamp: 2, text: "One." },
+      { speaker: "speaker_0", timestamp: 1.5, endTimestamp: 3, text: "Two." },
+      { speaker: "speaker_0", timestamp: 3, endTimestamp: 6, text: "Three." },
     ],
     {}
   );
@@ -91,18 +198,18 @@ test("the final merged SRT cue ends relative to its last segment, not its first"
 
 test("SRT timestamps roll sub-second rounding into the next second", () => {
   const output = formatSrt(
-    [{ speaker: "speaker_0", timestamp: 0.9995, text: "Near boundary." }],
+    [{ speaker: "speaker_0", timestamp: 0.9995, endTimestamp: 1.9995, text: "Near boundary." }],
     {}
   );
 
-  assert.match(output, /^1\n00:00:01,000 --> 00:00:04,000\nSpeaker 1: Near boundary\./);
+  assert.match(output, /^1\n00:00:01,000 --> 00:00:02,000\nSpeaker 1: Near boundary\./);
 });
 
 test("every cue in a multi-cue SRT rolls its own sub-second rounding", () => {
   const output = formatSrt(
     [
-      { speaker: "speaker_0", timestamp: 0.9995, text: "Opening." },
-      { speaker: "speaker_1", timestamp: 1.9995, text: "Reply." },
+      { speaker: "speaker_0", timestamp: 0.9995, endTimestamp: 1.9995, text: "Opening." },
+      { speaker: "speaker_1", timestamp: 1.9995, endTimestamp: 4.9995, text: "Reply." },
     ],
     {}
   );
@@ -112,18 +219,18 @@ test("every cue in a multi-cue SRT rolls its own sub-second rounding", () => {
   assert.match(output, /\n2\n00:00:02,000 --> 00:00:05,000\nSpeaker 2: Reply\./);
 });
 
-test("JSON duration reflects the last merged segment's timestamp", () => {
+test("JSON duration retains the measured final end", () => {
   const output = formatJson(
     { title: "Note", created_at: "2026-01-01T00:00:00Z" },
     [
-      { speaker: "speaker_0", timestamp: 0, text: "One." },
-      { speaker: "speaker_0", timestamp: 1.5, text: "Two." },
-      { speaker: "speaker_0", timestamp: 3, text: "Three." },
+      { speaker: "speaker_0", timestamp: 0, endTimestamp: 2, text: "One." },
+      { speaker: "speaker_0", timestamp: 1.5, endTimestamp: 3, text: "Two." },
+      { speaker: "speaker_0", timestamp: 3, endTimestamp: 6, text: "Three." },
     ],
     {}
   );
 
-  assert.equal(JSON.parse(output).metadata.duration_seconds, 3);
+  assert.equal(JSON.parse(output).metadata.duration_seconds, 6);
 });
 
 test("consecutive speaker-less segments within 2s merge across SRT, TXT and Markdown exports", () => {
@@ -136,7 +243,13 @@ test("consecutive speaker-less segments within 2s merge across SRT, TXT and Mark
   // SRT cues from a fully speaker-less transcript (a timestamped upload)
   // carry bare text — an "Unknown Speaker:" prefix on every subtitle would
   // defeat the format's purpose.
-  const srtOutput = formatSrt(segments, {});
+  const srtOutput = formatSrt(
+    [
+      { timestamp: 0, endTimestamp: 5, text: "Hello world, this is a test." },
+      { timestamp: 5, endTimestamp: 8, text: "Later sentence." },
+    ],
+    {}
+  );
   assert.match(srtOutput, /^1\n00:00:00,000 --> 00:00:05,000\nHello world, this is a test\./);
   assert.match(srtOutput, /\n2\n00:00:05,000 --> 00:00:08,000\nLater sentence\./);
   assert.doesNotMatch(srtOutput, /Unknown Speaker/);
@@ -161,8 +274,8 @@ test("consecutive speaker-less segments within 2s merge across SRT, TXT and Mark
 test("a single segment with speaker identity keeps the prefix on every SRT cue", () => {
   const output = formatSrt(
     [
-      { timestamp: 0, text: "No identity here." },
-      { speakerName: "Ada", timestamp: 5, text: "Named reply." },
+      { timestamp: 0, endTimestamp: 5, text: "No identity here." },
+      { speakerName: "Ada", timestamp: 5, endTimestamp: 8, text: "Named reply." },
     ],
     {}
   );
@@ -174,8 +287,8 @@ test("a single segment with speaker identity keeps the prefix on every SRT cue",
 test("meeting segments identified only by source keep their SRT speaker labels", () => {
   const output = formatSrt(
     [
-      { source: "mic", timestamp: 0, text: "Me talking." },
-      { source: "system", timestamp: 5, text: "Them talking." },
+      { source: "mic", timestamp: 0, endTimestamp: 5, text: "Me talking." },
+      { source: "system", timestamp: 5, endTimestamp: 8, text: "Them talking." },
     ],
     {}
   );

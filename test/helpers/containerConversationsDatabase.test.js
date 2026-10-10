@@ -601,7 +601,7 @@ test("denied folder delete restores the same notes, speakers, and conversations 
     folder.id
   ).note;
   db.setSpeakerMapping(child.id, "SPEAKER_00", null, "Alice");
-  db.saveNoteSpeakerEmbeddings(child.id, { SPEAKER_00: Buffer.from([1, 2, 3, 4]) });
+  db.saveNoteSpeakerEmbeddings(child.id, { SPEAKER_00: { vector: [1, 2, 3, 4], spaceId: "declared-fixture-space" } });
 
   const childNoteConv = db.createAgentConversation("Child note chat", child.id);
   db.markConversationSynced(childNoteConv.id, "cloud-conv-child");
@@ -764,7 +764,7 @@ test("denied folder delete restores the same notes, speakers, and conversations 
     db.getSpeakerMappings(child.id).map((row) => row.display_name),
     ["Alice"]
   );
-  assert.deepEqual([...db.getNoteSpeakerEmbeddings(child.id)[0].embedding], [1, 2, 3, 4]);
+  assert.deepEqual(db.getNoteSpeakerEmbeddings(child.id)[0].representation, { vector: [1, 2, 3, 4], spaceId: "declared-fixture-space" });
   assert.equal(
     db.db.prepare("SELECT deleted_at FROM agent_conversations WHERE id = ?").get(alreadyDeleted.id)
       .deleted_at !== null,

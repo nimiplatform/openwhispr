@@ -9,6 +9,7 @@ export interface ToolContextRequest {
 }
 
 export interface ToolExecutionScope {
+  readonly signal: AbortSignal;
   createContext: (request: ToolContextRequest) => ToolExecutionContext;
   abort: () => void;
 }
@@ -59,6 +60,7 @@ export function createToolExecutionScope(handlers: ToolExecutionHandlers = {}): 
     };
   };
   return {
+    signal: controller.signal,
     createContext: ({ messageId, toolCallId, signal }) => ({
       messageId,
       toolCallId,

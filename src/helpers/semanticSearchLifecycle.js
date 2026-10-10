@@ -1,3 +1,4 @@
+const { chunkConversation } = require("./conversationChunker");
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const RETRY_DELAY_MS = 30 * 1000;
 const DRAIN_PAGE_SIZE = 50;
@@ -40,6 +41,9 @@ class SemanticSearchLifecycle {
     this.retryDue = false;
     this.rowFailures = new Map();
     this.lastActivity = now();
+    this.lastQuery = null;
+    this.conversationSignature = null;
+    this.conversationActivation = null;
     this.onRestart = () => {
       this.ready = false;
       // Qdrant emits before leaving its restart critical section. Also wait
@@ -57,6 +61,7 @@ class SemanticSearchLifecycle {
   _canSearch() {
     return (
       this.ready &&
+      this.vectorIndex.isReady() &&
       !this.closed &&
       !this.stoppingPromise &&
       this.qdrant.isReady() &&
@@ -117,6 +122,7 @@ class SemanticSearchLifecycle {
     this.ready = false;
     this.vectorIndex.reset();
     this.indexPort = null;
+    this.conversationSignature = null;
     this.drainedThroughRevision = 0;
     this.rowFailures.clear();
     this._clearRetryTimer();
@@ -158,7 +164,7 @@ class SemanticSearchLifecycle {
     );
   }
 
-  async warmUp({ recovery = false } = {}) {
+  async warmUp({ recovery = false, signal } = {}) {
     if (this.closed) return false;
     if (this.activationPromise) return this.activationPromise;
     if (this.isReady()) return true;
@@ -174,7 +180,7 @@ class SemanticSearchLifecycle {
 
     if (!recovery) this.lastActivity = this.now();
     this._clearIdleTimer();
-    this.activationPromise = this._activate()
+    this.activationPromise = this._activate(signal)
       .catch(async (error) => {
         this.retryAfter = this.now() + RETRY_DELAY_MS;
         this.logger.debug("Semantic search unavailable; using keyword search", {
@@ -192,22 +198,34 @@ class SemanticSearchLifecycle {
     return this.activationPromise;
   }
 
-  async _activate() {
+  async _activate(signal) {
     if (this.stoppingPromise) await this.stoppingPromise;
     await Promise.allSettled([...this.searches]);
     if (this.closed) return false;
+    if (!this.lastQuery) return false;
     if (!this.qdrant.isAvailable()) throw new Error("Qdrant binary is unavailable");
-    if (!this.embeddings.isAvailable()) await this.embeddings.downloadModel();
+    if (!this.embeddings.isAvailable()) throw new Error("Nimi embedding session is unavailable");
+    const seed = await this.embeddings.embedText(this.lastQuery, {
+      signal,
+      purpose: "retrieval-query",
+    });
     if (this.closed) return false;
     await this.qdrant.start();
     if (this.closed || !this.qdrant.isReady()) return false;
-    this.vectorIndex.init(this.qdrant.getPort());
+    const initial = this.indexPort !== this.qdrant.getPort() || !this.vectorIndex.isReady();
+    if (initial) {
+      this.ready = false;
+      this.conversationSignature = null;
+      this.vectorIndex.init(this.qdrant.getPort());
+    }
     this.indexPort = this.qdrant.getPort();
-    const collection = await this.vectorIndex.ensureCollection();
+    const collection = await this.vectorIndex.ensureCollection(this.lastQuery, seed);
     // An existing collection answers while the journal catches it up; a new one is empty.
-    if (collection.created) this.database.enqueueAllVectorChanges();
-    else this.ready = true;
-    await this._drainPending();
+    if (collection.created || initial) {
+      await this.vectorIndex.pruneNotes((id) => this.database.getNoteForVectorIndex(id));
+      this.database.enqueueAllVectorChanges();
+    } else this.ready = true;
+    await this._drainPending(signal);
     if (this.closed) return false;
     this.ready = true;
     this.retryAfter = 0;
@@ -226,13 +244,14 @@ class SemanticSearchLifecycle {
     return (this.rowFailures.get(key) ?? 0) >= MAX_ROW_FAILURES;
   }
 
-  async _applyChange(noteId) {
+  async _applyChange(noteId, signal) {
     const note = this.database.getNoteForVectorIndex(noteId);
     if (!note || note.deleted_at) return this.vectorIndex.deleteNote(noteId);
     return this.vectorIndex.upsertNote(
       noteId,
-      this.noteEmbedText(note.title, note.content, note.enhanced_content),
-      { space_id: note.space_id, folder_id: note.folder_id ?? null }
+      this.noteEmbedText(note.title, note.content, note.enhanced_content, note.transcript),
+      { space_id: note.space_id, folder_id: note.folder_id ?? null },
+      { signal }
     );
   }
 
@@ -254,7 +273,7 @@ class SemanticSearchLifecycle {
     return retry;
   }
 
-  async _drainPending() {
+  async _drainPending(signal) {
     this.retryDue = false;
     let retry = await this._drainPurges();
     let cursor = this.drainedThroughRevision;
@@ -262,11 +281,13 @@ class SemanticSearchLifecycle {
       const changes = this.database.getPendingVectorChanges(DRAIN_PAGE_SIZE, cursor);
       if (changes.length === 0) break;
       for (const { note_id, revision } of changes) {
+        signal?.throwIfAborted();
         if (this.closed) return;
         cursor = revision;
         const key = `${note_id}:${revision}`;
         if (this._isParked(key)) continue;
-        if (await this._applyChange(note_id)) {
+        if (await this._applyChange(note_id, signal)) {
+          this.vectorIndex.assertCurrent();
           this.database.clearPendingVectorChange(note_id, revision);
         } else if (this._recordRowFailure(key, { noteId: note_id, revision })) {
           retry = true;
@@ -279,21 +300,96 @@ class SemanticSearchLifecycle {
     if (retry) this._scheduleRetry();
   }
 
-  // Never waits: a cold index answers with keywords, and a warm one searches while
-  // pending changes drain in the background.
-  async search(query, limit, filter) {
+  // The first semantic request waits for its actual compatible index. A warm
+  // index can answer while ordinary note edits drain in the background.
+  async search(query, limit, filter, { signal } = {}) {
+    signal?.throwIfAborted();
+    this.lastQuery = query;
     this.lastActivity = this.now();
     if (!this.isReady()) {
-      this.warmUp().catch((error) =>
+      const warming = this.warmUp({ signal }).catch((error) =>
         this.logger.warn("Semantic search warm-up failed", { error: error.message })
       );
+      if (!this._canSearch()) await warming;
+      signal?.throwIfAborted();
       if (!this._canSearch()) return null;
     }
     this._clearIdleTimer();
-    const search = this.vectorIndex.search(query, limit, filter);
+    const search = this.vectorIndex.search(query, limit, filter, { signal });
     this.searches.add(search);
     try {
-      return await search;
+      const result = await search;
+      signal?.throwIfAborted();
+      return result;
+    } catch (error) {
+      // A different Runtime space or retired session must never query/write the old index.
+      if (error.code === "EMBEDDING_CONTEXT_CHANGED" || error.name === "AbortError") {
+        this._resetIndexState();
+        this.retryAfter = 0;
+      }
+      throw error;
+    } finally {
+      this.searches.delete(search);
+      this.lastActivity = this.now();
+      this._scheduleIdle();
+    }
+  }
+
+  notifyConversationChanges() {
+    this.conversationSignature = null;
+  }
+
+  async searchConversations(query, limit, { signal } = {}) {
+    signal?.throwIfAborted();
+    this.lastQuery = query;
+    this.lastActivity = this.now();
+    if (!this.isReady()) {
+      await this.warmUp({ signal });
+      signal?.throwIfAborted();
+      if (!this._canSearch()) return null;
+    }
+    this._clearIdleTimer();
+    const search = (async () => {
+      const conversations = this.database
+        .getAgentConversations(Number.MAX_SAFE_INTEGER)
+        .map((conversation) => this.database.getAgentConversation(conversation.id))
+        .filter((conversation) => {
+          if (!conversation || conversation.archived_at) return false;
+          if (conversation.note_id == null) return true;
+          const note = this.database.getNoteForVectorIndex(conversation.note_id);
+          return note && !note.deleted_at;
+        });
+      const signature = JSON.stringify(
+        conversations.map((conversation) => [
+          conversation.id,
+          chunkConversation(conversation.title, conversation.messages).map((chunk) => chunk.text),
+        ])
+      );
+      if (!this.conversationActivation && this.conversationSignature !== signature) {
+        this.conversationActivation = this.vectorIndex
+          .reindexAllConversations(conversations, { signal })
+          .then(() => {
+            this.conversationSignature = signature;
+          })
+          .finally(() => {
+            this.conversationActivation = null;
+          });
+      }
+      await this.conversationActivation;
+      signal?.throwIfAborted();
+      return this.vectorIndex.searchConversations(query, limit, { signal });
+    })();
+    this.searches.add(search);
+    try {
+      const result = await search;
+      signal?.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (error.code === "EMBEDDING_CONTEXT_CHANGED" || error.name === "AbortError") {
+        this._resetIndexState();
+        this.retryAfter = 0;
+      }
+      throw error;
     } finally {
       this.searches.delete(search);
       this.lastActivity = this.now();
@@ -307,12 +403,19 @@ class SemanticSearchLifecycle {
     this._clearIdleTimer();
     this._clearRetryTimer();
     this.qdrant.removeListener("restarted", this.onRestart);
+    const unload = this.embeddings.unload().catch((error) => {
+      this.logger.warn("Embedding call shutdown failed", { error: error.message });
+    });
     try {
       // Cancel a port scan immediately; _activate checks closed after each preparation step.
       await this.qdrant.stop();
-      await Promise.allSettled([this.activationPromise, this.stoppingPromise, ...this.searches]);
+      await Promise.allSettled([
+        unload,
+        this.activationPromise,
+        this.stoppingPromise,
+        ...this.searches,
+      ]);
       this._resetIndexState();
-      await this.embeddings.unload();
     } catch (error) {
       this.logger.warn("Semantic search shutdown cleanup failed", { error: error.message });
     }

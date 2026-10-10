@@ -1,3 +1,4 @@
+const { getAppDataDirectory } = require("./appData");
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
@@ -61,7 +62,7 @@ class AudioTapManager {
 
   _statusFilePath() {
     const { app } = require("electron");
-    return path.join(app.getPath("userData"), ".system-audio-permission");
+    return path.join(getAppDataDirectory(), ".system-audio-permission");
   }
 
   _loadPermissionStatus() {

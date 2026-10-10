@@ -2,7 +2,11 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Square } from "../icons";
-import { stopRecording, useMeetingRecordingStore } from "../../stores/meetingRecordingStore";
+import {
+  cancelMeetingFinalization,
+  stopRecording,
+  useMeetingRecordingStore,
+} from "../../stores/meetingRecordingStore";
 import { cn } from "../lib/utils";
 import { isControlPanelWindow } from "../../utils/windowContext";
 
@@ -34,6 +38,8 @@ export default function MeetingRecordingPill({
 }: MeetingRecordingPillProps) {
   const { t } = useTranslation();
   const isRecording = useMeetingRecordingStore((s) => s.isRecording);
+  const isFinalizing = useMeetingRecordingStore((s) => s.isFinalizing);
+  const isCanceling = useMeetingRecordingStore((s) => s.isCancelingFinalization);
   const recordingNoteId = useMeetingRecordingStore((s) => s.recordingNoteId);
   const recordingNoteTitle = useMeetingRecordingStore((s) => s.recordingNoteTitle);
   const micLevel = useMeetingRecordingStore((s) => s.currentMicLevel);
@@ -44,7 +50,7 @@ export default function MeetingRecordingPill({
   const isViewingRecordingNote =
     activeView === "personal-notes" && activeNoteId === recordingNoteId;
 
-  if (!isRecording || isViewingRecordingNote || !isControlPanelWindow()) {
+  if ((!isRecording && !isFinalizing) || isViewingRecordingNote || !isControlPanelWindow()) {
     return null;
   }
 
@@ -60,7 +66,7 @@ export default function MeetingRecordingPill({
 
   const title = truncateTitle(recordingNoteTitle ?? "");
   const returnLabel = t("notes.meetingPill.returnToNote");
-  const stopLabel = t("notes.editor.stop");
+  const stopLabel = isFinalizing ? t("notes.meeting.cancelFinishing") : t("notes.editor.stop");
 
   return createPortal(
     <div
@@ -106,14 +112,18 @@ export default function MeetingRecordingPill({
             ))}
           </div>
           <span className="text-xs font-medium text-foreground/80 truncate max-w-[12rem]">
-            {isWaitingForMic ? t("notes.meetingPill.waitingForMicrophone") : title}
+            {isFinalizing
+              ? t("notes.meeting.finishing")
+              : isWaitingForMic
+                ? t("notes.meetingPill.waitingForMicrophone")
+                : title}
           </span>
         </button>
 
         <button
           type="button"
-          onClick={handleStop}
-          disabled={isStopping}
+          onClick={isFinalizing ? () => void cancelMeetingFinalization() : handleStop}
+          disabled={isFinalizing ? isCanceling || micCaptureStatus !== "inactive" : isStopping}
           aria-label={stopLabel}
           title={stopLabel}
           className={cn(

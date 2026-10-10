@@ -13,6 +13,8 @@ test("ipcErrorFields keeps every classified field and drops undefined ones", asy
     technicalDetails: { provider: "Mistral", status: 401 },
     status: 401,
     surface: "transcription",
+    reasonCode: "NIMI_AUDIO_SUBMISSION_UNCONFIRMED",
+    details: { clientSubmissionId: "original-action" },
   });
   assert.deepEqual(ipcErrorFields(error), {
     error: "Mistral rejected your API key.",
@@ -23,6 +25,8 @@ test("ipcErrorFields keeps every classified field and drops undefined ones", asy
     technicalDetails: { provider: "Mistral", status: 401 },
     status: 401,
     surface: "transcription",
+    reasonCode: "NIMI_AUDIO_SUBMISSION_UNCONFIRMED",
+    details: { clientSubmissionId: "original-action" },
   });
   assert.deepEqual(ipcErrorFields(new Error("plain")), { error: "plain" });
 });

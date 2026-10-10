@@ -52,6 +52,7 @@ interface TranscriptionItemProps {
   onDelete: (id: number) => void;
   onShowAudioInFolder?: (id: number) => void;
   onRetryTranscription?: (id: number, options?: { isRecover?: boolean }) => Promise<void>;
+  onCancelRetry?: (id: number) => void;
   onOpenSettings?: () => void;
 }
 
@@ -61,11 +62,29 @@ export default function TranscriptionItem({
   onDelete,
   onShowAudioInFolder,
   onRetryTranscription,
+  onCancelRetry,
   onOpenSettings,
 }: TranscriptionItemProps) {
   const { t, i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+  const editingIncomplete = (() => {
+    try {
+      const editing = JSON.parse(item.recognition_result || "{}").editing;
+      return (
+        editing &&
+        Object.values(editing).some(
+          (value) =>
+            value &&
+            typeof value === "object" &&
+            "status" in value &&
+            (value.status === "failed" || value.status === "unchanged")
+        )
+      );
+    } catch {
+      return false;
+    }
+  })();
 
   const timestampSource = item.timestamp.endsWith("Z") ? item.timestamp : `${item.timestamp}Z`;
   const timestampDate = new Date(timestampSource);
@@ -171,6 +190,7 @@ export default function TranscriptionItem({
             // Actions surface on hover, keyboard focus, or while the menu is open; failed and
             // discarded rows keep them visible because recovery is the point of the row.
             isTranscribed &&
+              !isRetrying &&
               "opacity-0 group-hover/row:opacity-100 has-[:focus-visible]:opacity-100 has-[[data-state=open]]:opacity-100"
           )}
         >
@@ -185,6 +205,11 @@ export default function TranscriptionItem({
                 <Copy size={13} />
               </Button>
             </Tooltip>
+          )}
+          {isRetrying && onCancelRetry && (
+            <Button variant="ghost" size="sm" onClick={() => onCancelRetry(item.id)}>
+              {t("common.cancel")}
+            </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -222,6 +247,11 @@ export default function TranscriptionItem({
       </div>
 
       <div className="mt-1.5">
+        {editingIncomplete && (
+          <p role="status" className="mb-2 text-sm text-warning">
+            {t("controlPanel.history.retryEditingWarning")}
+          </p>
+        )}
         {isFailed ? (
           <div className="flex items-start gap-2">
             <AlertCircle size={14} className="mt-0.5 shrink-0 text-destructive" />
@@ -231,9 +261,15 @@ export default function TranscriptionItem({
               </p>
               {item.error_message && (
                 <p className="mt-0.5 text-xs leading-relaxed wrap-break-word text-muted-foreground">
-                  {item.error_message}
+                  {t("controlPanel.history.recordedFailureReason", { reason: item.error_message })}
                 </p>
               )}
+              {(errorCode === "NIMI_SESSION_UNAVAILABLE" || errorCode === "NIMI_SESSION_CHANGED") &&
+                hasAudio && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("nimi.sessionRecordingRecovery")}
+                  </p>
+                )}
               {isConfigError && (
                 <p className="mt-1 text-xs text-muted-foreground">
                   {hasAudio ? (

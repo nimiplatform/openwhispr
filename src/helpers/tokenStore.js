@@ -1,10 +1,11 @@
+const { getAppDataDirectory } = require("./appData");
 const { app } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const debugLogger = require("./debugLogger");
 const secretCrypto = require("./secretCrypto");
 
-const tokenFile = () => path.join(app.getPath("userData"), "auth-token.bin");
+const tokenFile = () => path.join(getAppDataDirectory(), "auth-token.bin");
 
 let cached = null;
 let generation = 0;
@@ -122,4 +123,4 @@ function subscribe(listener) {
   return () => listeners.delete(listener);
 }
 
-module.exports = { get, getState, set, setIfGeneration, clear, subscribe };
+module.exports = { get, getState, getGeneration: () => generation, set, setIfGeneration, clear, subscribe };

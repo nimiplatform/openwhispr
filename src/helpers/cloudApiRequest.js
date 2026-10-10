@@ -1,5 +1,10 @@
 const { withPolicyRequestHeaders } = require("./policyRequestHeaders");
 
+// This bridge carries OpenWhispr business services. Model execution is owned
+// by the supervised Nimi carrier, including when a caller supplies a raw path.
+const BUSINESS_PATH =
+  /^\/api\/(?:analytics|auth|check-user|conversations|desktop-signin|dictionary|folders|invitations|leaderboard|me|notes|onboarding-intent|overview|snippets|spaces|teams|transcriptions|usage|workspaces|v1\/keys)(?:\/|$)/;
+
 class AuthContextError extends Error {
   constructor(message, code = "AUTH_CONTEXT_CHANGED") {
     super(message);
@@ -83,6 +88,14 @@ function createCloudApiRequestHandler({
       const targetUrl = new URL(opts.path, apiUrl);
       if (targetUrl.origin !== new URL(apiUrl).origin) {
         return { success: false, error: "Invalid API path" };
+      }
+      if (!BUSINESS_PATH.test(targetUrl.pathname)) {
+        return {
+          success: false,
+          error: "This API bridge accepts business services only. Configure AI in Nimi.",
+          code: "BUSINESS_API_REQUIRED",
+          status: 0,
+        };
       }
       // Concatenation (not targetUrl) preserves any base path in apiUrl; the
       // origin check above still rejects protocol-relative "//host" paths.

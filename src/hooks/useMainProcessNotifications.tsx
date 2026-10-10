@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { TFunction } from "i18next";
-import { ToastActionButton } from "../components/ui/Toast";
+
 import type { ToastContextType } from "../components/ui/useToast";
 
 /**
@@ -38,33 +38,6 @@ export function useMainProcessNotifications({
       });
     });
 
-    const showGpuFallbackToast = () => {
-      let toastId: string;
-      toastId = toast({
-        title: t("app.toasts.gpuFallback.title"),
-        description: t("app.toasts.gpuFallback.description"),
-        duration: 10000,
-        action: (
-          <ToastActionButton
-            onClick={async () => {
-              try {
-                const result = await window.electronAPI?.whisperGpuRetry?.();
-                if (result?.success) dismiss(toastId);
-              } catch {
-                // silently fail — toast stays up for another attempt
-              }
-            }}
-          >
-            {t("app.toasts.gpuFallback.retry")}
-          </ToastActionButton>
-        ),
-      });
-    };
-    const unsubscribeCudaFallback =
-      window.electronAPI?.onCudaFallbackNotification?.(showGpuFallbackToast);
-    const unsubscribeGpuFallback =
-      window.electronAPI?.onGpuFallbackNotification?.(showGpuFallbackToast);
-
     const unsubscribeCorrections = window.electronAPI?.onCorrectionsLearned?.((words) => {
       if (words && words.length > 0) {
         const wordList = words.map((w) => `“${w}”`).join(", ");
@@ -101,8 +74,7 @@ export function useMainProcessNotifications({
     return () => {
       unsubscribeFallback?.();
       unsubscribeFailed?.();
-      unsubscribeCudaFallback?.();
-      unsubscribeGpuFallback?.();
+
       unsubscribeCorrections?.();
     };
   }, [toast, dismiss, t]);

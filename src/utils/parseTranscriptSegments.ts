@@ -6,9 +6,14 @@ export function parseTranscriptSegments(raw: string): TranscriptSegment[] {
   try {
     const parsed = JSON.parse(raw) as Array<{
       text: string;
+      id?: string;
       source: "mic" | "system";
       timestamp?: number;
+      endTimestamp?: number;
+      clockBasis?: TranscriptSegment["clockBasis"];
+      recognition?: TranscriptSegment["recognition"];
       speaker?: string;
+      speakerMatching?: string;
       speakerName?: string;
       speakerIsPlaceholder?: boolean;
       suggestedName?: string;
@@ -19,11 +24,15 @@ export function parseTranscriptSegments(raw: string): TranscriptSegment[] {
     }>;
     return normalizeTranscriptSegments(
       parsed.map((s, i) => ({
-        id: `stored-${i}`,
+        id: s.id || `stored-${i}`,
         text: s.text,
         source: s.source,
         timestamp: s.timestamp,
+        endTimestamp: s.endTimestamp,
+        clockBasis: s.clockBasis,
+        recognition: s.recognition,
         speaker: s.speaker,
+        speakerMatching: s.speakerMatching,
         speakerName: s.speakerName,
         speakerIsPlaceholder: s.speakerIsPlaceholder,
         suggestedName: s.suggestedName,

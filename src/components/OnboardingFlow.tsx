@@ -1,7 +1,9 @@
+import NimiAISettings from "./settings/NimiAISettings";
+import { Button as NimiSetupButton } from "./ui/button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertCircle } from "./icons";
-import { CompactAuthenticationFlow } from "./CompactAuthenticationFlow";
+
 import UseCaseStep from "./onboarding/UseCaseStep";
 import { hasUseCaseIntent } from "./onboarding/useCases";
 import OnboardingShell, { OnboardingStepHeader } from "./onboarding/OnboardingShell";
@@ -11,9 +13,7 @@ import ShortcutSetupStep from "./onboarding/ShortcutSetupStep";
 import AssistantHotkeyPreview from "./onboarding/AssistantHotkeyPreview";
 import DemoStep from "./onboarding/DemoStep";
 import CalendarConnectionsStep from "./onboarding/CalendarConnectionsStep";
-import SetupChoiceStep from "./onboarding/SetupChoiceStep";
-import { ByokProviderStep, LocalModelSetupStep } from "./onboarding/ProviderSetupStep";
-import { RequiredModelDownloadStep } from "./onboarding/RequiredModelDownloadStep";
+
 import { AlertDialog } from "./ui/dialog";
 import { useAuth } from "../hooks/useAuth";
 import { usePermissions } from "../hooks/usePermissions";
@@ -25,7 +25,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useHotkeyRegistration } from "../hooks/useHotkeyRegistration";
 import { useHotkeyModeInfo } from "../hooks/useHotkeyModeInfo";
 import { useWorkspace } from "../hooks/useWorkspace";
-import { useRequiredLocalModels } from "../hooks/useRequiredLocalModels";
+
 import { usePolicyStore } from "../stores/policyStore";
 import { isAgentAllowed, isScreenContextAllowed } from "../stores/policyRules";
 import { useSettingsStore } from "../stores/settingsStore";
@@ -57,11 +57,8 @@ import {
   shouldInitializeMacAccessibilityFeatures,
   shouldSkipOnboardingSetupChoice,
   type OnboardingAuthDraft,
-  type OnboardingByokDraft,
-  type OnboardingLocalModelDraft,
   type OnboardingResumeState,
   type OnboardingSetupMode,
-  type OnboardingStepId,
 } from "./onboarding/flow";
 import { useOnboardingSession } from "./onboarding/useOnboardingSession";
 import { usePermissionGuide } from "./onboarding/usePermissionGuide";
@@ -69,7 +66,7 @@ import {
   requestMicrophoneForGuide,
   type GuidePermission,
 } from "./onboarding/permissionGuideController";
-import { clearPendingLocalModels, hasPendingLocalModels } from "./onboarding/pendingLocalModels";
+
 import { resolveAssistantDemoScenario } from "./onboarding/assistantDemoScenario";
 import { ActivationModeSelector } from "./ui/ActivationModeSelector";
 import LinuxPttSetupInfo from "./ui/LinuxPttSetupInfo";
@@ -303,14 +300,13 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     screenRecordingGranted,
   ]);
 
-  const requiredModels = useRequiredLocalModels();
   // Latched for the session once the step is entered (or resumed at), so a
   // mid-download policy refresh or the disk check settling can't rebuild the
   // route out from under the user. Seeded from the persisted session because
   // relaunching mid-download must resume on the step, not bounce off it while
   // the disk check is still pending.
-  const requiredModelsLatchRef = useRef(session.currentStepId === "required-models");
-  const requiredModelsPending = requiredModelsLatchRef.current || requiredModels.missing.length > 0;
+  const requiredModelsLatchRef = useRef(false);
+  const requiredModelsPending = false;
 
   const route = useMemo(
     () =>
@@ -428,32 +424,6 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
   useEffect(() => {
     if (currentStepId !== "permissions" && session.permissionGuide) setPermissionGuide(null);
   }, [currentStepId, session.permissionGuide, setPermissionGuide]);
-  const updateCurrentByokDraft = useCallback(
-    (state: OnboardingByokDraft) => {
-      if (currentStepId !== "byok-dictation" && currentStepId !== "byok-assistant") return;
-      setSession((current) => ({
-        ...current,
-        resume: {
-          ...current.resume,
-          byok: { ...current.resume.byok, [currentStepId]: state },
-        },
-      }));
-    },
-    [currentStepId, setSession]
-  );
-  const updateCurrentLocalModelDraft = useCallback(
-    (state: OnboardingLocalModelDraft) => {
-      if (currentStepId !== "local-dictation" && currentStepId !== "local-assistant") return;
-      setSession((current) => ({
-        ...current,
-        resume: {
-          ...current.resume,
-          localModels: { ...current.resume.localModels, [currentStepId]: state },
-        },
-      }));
-    },
-    [currentStepId, setSession]
-  );
 
   useEffect(() => {
     if (currentStepId === "required-models") requiredModelsLatchRef.current = true;
@@ -618,70 +588,23 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     settings.spokenLanguages,
   ]);
 
-  const finalizeOnboarding = useCallback(
-    async (mode: OnboardingCompletionMode) => {
-      if (isFinishing) return;
-      setIsFinishing(true);
-      setFatalError(null);
-      try {
-        const registered = await registerHotkey(withExtraDictationHotkeys(dictationHotkey));
-        if (!registered) {
-          setFatalError(t("onboarding.hotkey.couldNotRegisterDescription"));
-          return;
-        }
-
-        if (mode === "cloud") {
-          const health = await window.electronAPI?.cloudHealthCheck?.();
-          if (health && !health.ok && health.status === undefined) {
-            setFatalError(t(health.messageKey || "streaming.errors.cloudUnreachable.generic"));
-            return;
-          }
-        }
-
-        await window.electronAPI?.saveAllKeysToEnv?.();
-        await window.electronAPI?.markBundleMigrated?.();
-        await window.electronAPI?.setOnboardingWindowMode?.("restore");
-
-        // hasPendingLocalModels() covers leaving a still-running download, by
-        // Proceed or Skip: the model was remembered when the download started,
-        // and BackgroundModelDownloadTray only applies it (and then clears this
-        // flag) while the flag is set.
-        //
-        // Only preserve a pending download when the completed route still uses
-        // local models. A user who walks Back and finishes on Cloud/BYOK must not
-        // be switched back to a stale local selection when it completes later.
-        const routeKeepsLocalModels = mode === "local";
-        if (routeKeepsLocalModels && hasPendingLocalModels()) {
-          localStorage.setItem("localSetupPending", "true");
-        } else {
-          localStorage.removeItem("localSetupPending");
-          clearPendingLocalModels();
-        }
-
-        const skippedAuth = session.authPath === "guest";
-        localStorage.setItem("authenticationSkipped", String(skippedAuth));
-        localStorage.setItem("skipAuth", String(skippedAuth));
-        clearSession();
-        localStorage.setItem("onboardingCompleted", "true");
-        onComplete();
-      } catch (error) {
-        logger.error("Failed to finish onboarding", { error }, "onboarding");
-        setFatalError(t("common.unknownError"));
-      } finally {
-        setIsFinishing(false);
-      }
-    },
-    [
-      clearSession,
-      dictationHotkey,
-      isFinishing,
-      onComplete,
-      registerHotkey,
-      session.authPath,
-      t,
-      withExtraDictationHotkeys,
-    ]
-  );
+  const finalizeOnboarding = useCallback(async () => {
+    if (isFinishing) return;
+    setFatalError(null);
+    setIsFinishing(true);
+    try {
+      syncUseCases();
+      if (!isSignedIn) localStorage.setItem("authenticationSkipped", "true");
+      localStorage.setItem("onboardingCompleted", "true");
+      clearSession();
+      window.dispatchEvent(new Event("settings-changed"));
+      onComplete();
+    } catch (error) {
+      setFatalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsFinishing(false);
+    }
+  }, [isFinishing, onComplete, syncUseCases, clearSession, isSignedIn]);
 
   // Sessions saved on the old setup-choice step reconcile back to the last
   // guided step once an Enterprise workspace is confirmed. Finish them without
@@ -691,83 +614,8 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     if (!skipSetupChoiceForEnterprise || session.currentStepId !== "setup-choice" || isFinishing) {
       return;
     }
-    void finalizeOnboarding("managed");
+    void finalizeOnboarding();
   }, [finalizeOnboarding, isFinishing, session.currentStepId, skipSetupChoiceForEnterprise]);
-
-  const applyReasoningSelectionToAllScopes = useCallback(
-    (mode: "byok" | "local") => {
-      // getState(), not the render-time snapshot: the provider steps write
-      // chatAgentProvider/chatAgentModel via switchReasoningProvider and call
-      // onProceed() in the same tick, so `settingsStore` here still holds the
-      // values from before the pick. Reading it stale configured the other three
-      // scopes to the defaults (groq / openai/gpt-oss-120b) with no key.
-      const {
-        chatAgentProvider,
-        chatAgentModel,
-        chatAgentCloudBaseUrl,
-        chatAgentRemoteUrl,
-        chatAgentCustomApiKey,
-      } = useSettingsStore.getState();
-      settingsStore.setCloudReasoningForAllScopes({
-        cleanupCloudMode: mode,
-        cleanupProvider: chatAgentProvider,
-        cleanupModel: chatAgentModel,
-        cleanupCloudBaseUrl: chatAgentCloudBaseUrl,
-        cleanupRemoteUrl: chatAgentRemoteUrl,
-        // Only a self-hosted or custom endpoint has one; an empty write would
-        // just churn five secure-store entries.
-        ...(chatAgentCustomApiKey ? { cleanupCustomApiKey: chatAgentCustomApiKey } : {}),
-        useCleanupModel: true,
-        useDictationAgent: true,
-      });
-    },
-    [settingsStore]
-  );
-
-  const handleSetupSelection = useCallback(
-    async (mode: Exclude<OnboardingSetupMode, null>, options?: { selfHosted?: boolean }) => {
-      setSetupMode(mode);
-      setSelfHostedRequested(!!options?.selfHosted);
-      if (mode === "cloud") {
-        settingsStore.setCloudTranscriptionForAllScopes({
-          useLocalWhisper: false,
-          cloudTranscriptionMode: "openwhispr",
-          cloudTranscriptionProvider: "openwhispr",
-        });
-        if (agentAllowed) {
-          settingsStore.setCloudReasoningForAllScopes({
-            cleanupCloudMode: "openwhispr",
-            cleanupProvider: "openwhispr",
-          });
-        } else {
-          // The policy-shortened route has no assistant setup. Avoid persisting
-          // a reasoning provider the workspace disallows, and keep dictation
-          // from attempting cleanup through an unconfigured LLM.
-          settingsStore.updateCleanupSettings({ useCleanupModel: false });
-        }
-        await finalizeOnboarding("cloud");
-        return;
-      }
-      const nextRoute = getOnboardingRoute({
-        authPath: session.authPath,
-        setupMode: mode,
-        agentAllowed,
-        requiredModelsPending,
-      });
-      const next = getNextOnboardingStep("setup-choice", nextRoute);
-      if (next) goTo(next);
-    },
-    [
-      agentAllowed,
-      finalizeOnboarding,
-      goTo,
-      requiredModelsPending,
-      session.authPath,
-      setSelfHostedRequested,
-      setSetupMode,
-      settingsStore,
-    ]
-  );
 
   const continueFromCurrentStep = useCallback(async () => {
     // A banner from an earlier failed attempt must not outlive the retry.
@@ -803,28 +651,6 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
           return;
         }
       }
-    } else if (currentStepId === "byok-dictation") {
-      settingsStore.setCloudTranscriptionForAllScopes({
-        useLocalWhisper: false,
-        cloudTranscriptionMode: "byok",
-      });
-      // When policy disallows the assistant, its step is off-route and no
-      // LLM gets configured. Turn cleanup off so dictations do not route to a
-      // default provider with no credential behind it.
-      if (!route.includes("byok-assistant")) {
-        settingsStore.updateCleanupSettings({ useCleanupModel: false });
-      }
-    } else if (currentStepId === "byok-assistant") {
-      applyReasoningSelectionToAllScopes("byok");
-    } else if (currentStepId === "local-dictation") {
-      settingsStore.setCloudTranscriptionForAllScopes({ useLocalWhisper: true });
-      // Same policy-shortened-route case as BYOK: no local LLM was downloaded,
-      // so cleanup must not silently fall back to a cloud default.
-      if (!route.includes("local-assistant")) {
-        settingsStore.updateCleanupSettings({ useCleanupModel: false });
-      }
-    } else if (currentStepId === "local-assistant") {
-      applyReasoningSelectionToAllScopes("local");
     }
 
     const next = getNextOnboardingStep(currentStepId, route);
@@ -834,12 +660,11 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     }
 
     if (skipSetupChoiceForEnterprise) {
-      await finalizeOnboarding("managed");
+      await finalizeOnboarding();
       return;
     }
-    if (session.setupMode) await finalizeOnboarding(session.setupMode);
+    if (session.setupMode) await finalizeOnboarding();
   }, [
-    applyReasoningSelectionToAllScopes,
     assistantHotkey,
     currentStepId,
     dictationHotkey,
@@ -861,21 +686,8 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     skipSetupChoiceForEnterprise,
   ]);
 
-  const skipLocalSetup = useCallback(async () => {
-    if (currentStepId === "local-dictation") {
-      await continueFromCurrentStep();
-      return;
-    }
-    // The local assistant is optional. If the user skips it, prevent
-    // dictation from falling back to an unconfigured cleanup provider.
-    settingsStore.updateCleanupSettings({ useCleanupModel: false });
-    await finalizeOnboarding("local");
-  }, [continueFromCurrentStep, currentStepId, finalizeOnboarding, settingsStore]);
-
   const canContinue = (() => {
     switch (currentStepId) {
-      case "required-models":
-        return !requiredModels.loading && requiredModels.missing.length === 0;
       case "permissions":
         return areRequiredPermissionsMet(permissions.micPermissionGranted);
       case "languages":
@@ -892,11 +704,7 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
         return assistantDemoSuccess;
       case "notes":
         return notesFooterAction === "continue";
-      case "byok-dictation":
-      case "byok-assistant":
-      case "local-dictation":
-      case "local-assistant":
-        return stageReady;
+
       default:
         return true;
     }
@@ -906,47 +714,20 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     switch (currentStepId) {
       case "auth":
         return (
-          <div className="min-h-full w-full">
-            <CompactAuthenticationFlow
-              resumeState={session.resume.auth}
-              onResumeStateChange={updateAuthResumeState}
-              autoContinue={!returnedToAuth}
-              onSignOut={() => void handleLogout()}
-              onContinueWithoutAccount={() => {
-                // Guests continue onto their route's permissions step — jumping
-                // straight to setup-choice would skip the permission grants and
-                // hotkey the guest route exists to guarantee (see flow.ts).
-                setReturnedToAuth(false);
+          <div className="min-h-full w-full space-y-6 p-6">
+            <OnboardingStepHeader
+              title={t("nimi.modelsTitle")}
+              description={t("nimi.modelsDescription")}
+            />
+            <NimiAISettings />
+            <NimiSetupButton
+              onClick={() => {
                 setAuthPath("guest");
                 goTo("permissions");
               }}
-              onAuthComplete={() => {
-                setReturnedToAuth(false);
-                setAuthPath("account");
-                goTo(session.setupMode === "cloud" ? "setup-choice" : "permissions");
-              }}
-            />
-          </div>
-        );
-
-      case "required-models":
-        return (
-          <div className="h-full w-full pt-2">
-            <OnboardingStepHeader
-              title={t("onboarding.requiredModels.title")}
-              wideTitle
-              description={t("onboarding.requiredModels.description", {
-                organization:
-                  activeWorkspace?.name ?? t("onboarding.requiredModels.genericOrganization"),
-              })}
-            />
-            <RequiredModelDownloadStep
-              required={requiredModels.required}
-              missing={requiredModels.missing}
-              loading={requiredModels.loading}
-              refresh={requiredModels.refresh}
-              onProceed={() => void continueFromCurrentStep()}
-            />
+            >
+              {t("common.continue")}
+            </NimiSetupButton>
           </div>
         );
 
@@ -975,6 +756,7 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
                 : undefined
             }
             onContinue={() => void continueFromCurrentStep()}
+            onDeferMicrophone={() => goTo("dictation-hotkey")}
           />
         );
 
@@ -1205,80 +987,11 @@ export default function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
       case "setup-choice":
         return (
-          <div className="h-full w-full pt-2">
-            <OnboardingStepHeader
-              title={t("onboarding.rehaul.setupChoice.title")}
-              titleLines={[
-                t("onboarding.rehaul.setupChoice.titleLineOne"),
-                t("onboarding.rehaul.setupChoice.titleLineTwo"),
-              ]}
-              description={t("onboarding.rehaul.setupChoice.description")}
-            />
-            <SetupChoiceStep
-              isSignedIn={isSignedIn}
-              agentAllowed={agentAllowed}
-              onSelect={(mode, options) => void handleSetupSelection(mode, options)}
-              onRequestAuthentication={() => {
-                setSetupMode("cloud");
-                setAuthPath(null);
-                goTo("auth");
-              }}
-            />
-          </div>
-        );
-
-      case "byok-dictation":
-      case "byok-assistant":
-        return (
-          <div className="h-full w-full pt-2">
-            <div>
-              <OnboardingStepHeader
-                title={t("onboarding.rehaul.provider.title")}
-                description={t("onboarding.rehaul.provider.description")}
-                descriptionLines={[
-                  t("onboarding.rehaul.provider.descriptionLineOne"),
-                  t("onboarding.rehaul.provider.descriptionLineTwo"),
-                ]}
-                wideTitle
-              />
-            </div>
-            <ByokProviderStep
-              key={currentStepId}
-              stepId={currentStepId}
-              selfHostedRequested={session.selfHostedRequested}
-              onSelfHostedChange={setSelfHostedRequested}
-              onConnectionChange={setStageReady}
-              onProceed={() => void continueFromCurrentStep()}
-              resumeState={session.resume.byok[currentStepId]}
-              onResumeStateChange={updateCurrentByokDraft}
-            />
-          </div>
-        );
-
-      case "local-dictation":
-      case "local-assistant":
-        return (
-          <div className="h-full w-full pt-2">
-            <OnboardingStepHeader
-              title={t("onboarding.rehaul.local.title")}
-              // Without this the h1 is capped at max-w-xs (320px), which wraps
-              // "Set up local models" onto a second line at 40px.
-              wideTitle
-              description={t("onboarding.rehaul.local.description")}
-              descriptionLines={[
-                t("onboarding.rehaul.local.descriptionLineOne"),
-                t("onboarding.rehaul.local.descriptionLineTwo"),
-              ]}
-            />
-            <LocalModelSetupStep
-              key={currentStepId}
-              stepId={currentStepId}
-              onReadinessChange={setStageReady}
-              onProceed={() => void continueFromCurrentStep()}
-              onSkip={() => void skipLocalSetup()}
-              resumeState={session.resume.localModels[currentStepId]}
-              onResumeStateChange={updateCurrentLocalModelDraft}
-            />
+          <div className="h-full w-full space-y-6 p-6">
+            <NimiAISettings />
+            <NimiSetupButton disabled={isFinishing} onClick={() => void finalizeOnboarding()}>
+              {t("common.continue")}
+            </NimiSetupButton>
           </div>
         );
     }

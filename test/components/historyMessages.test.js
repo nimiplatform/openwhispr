@@ -19,6 +19,21 @@ function assistant(content, toolCalls) {
 
 const user = (content) => ({ id: "u1", role: "user", content, isStreaming: false });
 
+test('Nimi history retains ordered model and tool messages with opaque metadata', async () => {
+  const { toHistoryMessages } = await load();
+  const transcript = [
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-1', toolName: 'search_notes',
+      input: { query: '财务预测' }, providerOptions: { nimi: { continuity: 'opaque-bytes' } } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'call-1', toolName: 'search_notes',
+      output: { type: 'json', value: [{ title: '季度营收预测' }] } }] },
+    { role: 'assistant', content: [{ type: 'text', text: '找到相关笔记。', providerOptions: { nimi: { continuity: 'next-opaque-bytes' } } }] },
+  ];
+  const history = toHistoryMessages([user('查找预测'), { ...assistant('找到相关笔记。'), nimiTranscript: transcript },
+    user('继续比较')], { includeToolTrace: true });
+  assert.deepEqual(history, [{ role: 'user', content: '查找预测' }, ...transcript, { role: 'user', content: '继续比较' }]);
+  assert.equal(history[1], transcript[0]);
+});
+
 test("an earlier turn's tools are noted before its answer, with their search queries", async () => {
   const { toHistoryMessages } = await load();
   const history = toHistoryMessages(
@@ -128,6 +143,13 @@ test("a reply that imitates the trace is shown without it", async () => {
   // Mid-stream, the start of a note stays hidden until it can tell.
   assert.equal(withoutEchoedToolTrace("[Too"), "");
   assert.equal(withoutEchoedToolTrace("[Tools used: web_search"), "");
+  const repeated = "[Tools used: search_notes]\n[Tools used: get_note]\n七十二万元，由林遥核验。";
+  assert.equal(withoutEchoedToolTrace(repeated), "七十二万元，由林遥核验。");
+  assert.equal(withoutEchoedToolTrace("[Tools used: search_notes]\n[Too"), "");
+  assert.equal(withoutEchoedToolTrace("[Tools used: search_notes]\n[Tools used: get_note\n"), "");
+  for (let length = 1; length < repeated.indexOf("七"); length++) {
+    assert.equal(withoutEchoedToolTrace(repeated.slice(0, length)), "");
+  }
   // Anything else, including a link or a later mention, is left alone.
   assert.equal(withoutEchoedToolTrace("[Docs](https://x.dev)"), "[Docs](https://x.dev)");
   assert.equal(withoutEchoedToolTrace("[Tools](https://x.dev)"), "[Tools](https://x.dev)");

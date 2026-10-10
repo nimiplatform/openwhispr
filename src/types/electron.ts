@@ -1,6 +1,6 @@
 import type { ModelDefinition } from "../models/ModelRegistry";
 import type { PermissionGuideState, PermissionGuideAction } from "./permissionGuide";
-import type { TinfoilCatalogModel } from "../models/tinfoilModels";
+
 import type { UsageResponse } from "../lib/usageStore";
 import type { OrgPolicy } from "./policy";
 import type { TechnicalErrorDetailsData } from "../components/ui/useToast";
@@ -76,6 +76,15 @@ export interface PolicyFailureMetadata {
   details?: unknown;
 }
 
+export interface MeetingTranscriptionFailure {
+  error: string;
+  code?: string;
+  messageKey?: string;
+  messageParams?: Record<string, string | number>;
+  settingsTarget?: string;
+  technicalDetails?: import("../components/ui/useToast").TechnicalErrorDetailsData;
+}
+
 export interface NoteRecordingProviderModel {
   id: string;
   name: string;
@@ -125,6 +134,8 @@ export type TranscriptionErrorCode =
   | "OFFLINE"
   | "AUTH_EXPIRED"
   | "AUTH_REQUIRED"
+  | "NIMI_SESSION_UNAVAILABLE"
+  | "NIMI_SESSION_CHANGED"
   | "LIMIT_REACHED"
   | "PROVIDER_RATE_LIMITED"
   | "API_KEY_MISSING"
@@ -248,6 +259,7 @@ export interface TranscriptionItem {
   id: number;
   text: string;
   raw_text: string | null;
+  recognition_result?: string | null;
   timestamp: string;
   created_at: string;
   has_audio: number;
@@ -396,7 +408,45 @@ export interface Leaderboard {
   refreshAfterSeconds: number;
 }
 
+export interface NoteRecordingTrack {
+  source: "mic" | "system";
+  path: string;
+  anchorMs: number;
+  clockBasis: "capture" | "arrival";
+  sampleRate: number;
+  frameCount: number;
+}
+
+export interface NoteRecordingMedia {
+  sessionId: string;
+  status: "processing" | "completed" | "failed" | "canceled";
+  error?: string;
+  originalPath: string;
+  audioPath: string;
+  tracks: NoteRecordingTrack[];
+}
+
+export interface NoteSourceMedia {
+  originalName?: string;
+  originalPath: string;
+  audioPath: string;
+  transcriptOriginMs?: number;
+  durationSeconds?: number;
+  recordings?: NoteRecordingMedia[];
+  chunks?: Array<{
+    offsetSeconds: number;
+    durationSeconds: number;
+    transcript: import("@nimiplatform/sdk/app").NimiLocalAppSpeechTranscript;
+    jobId: string;
+  }>;
+}
+
+export type NoteTranscriptSource =
+  { type: "original" } | { type: "recording"; sessionId: string; source: "mic" | "system" };
+
 export interface NoteItem {
+  source_media?: NoteSourceMedia;
+  account_id?: string | null;
   id: number;
   title: string;
   content: string;
@@ -1252,17 +1302,7 @@ declare global {
       stopOnboardingDemo?: (id: string) => Promise<boolean>;
       publishOnboardingDemoEvent?: (event: Omit<OnboardingDemoEvent, "demoId">) => Promise<boolean>;
       onOnboardingDemoEvent?: (callback: (event: OnboardingDemoEvent) => void) => () => void;
-      testProviderConnection?: (config: {
-        scope: "transcription" | "reasoning";
-        provider: string;
-        apiKey?: string;
-        baseUrl?: string;
-        model?: string;
-        clientId?: string;
-        clientSecret?: string;
-        environment?: string;
-        tenant?: string;
-      }) => Promise<{ success: boolean; error?: string; errorCode?: string; status?: number }>;
+
       pasteText: (
         text: string,
         options?: {
@@ -1381,15 +1421,6 @@ declare global {
       onAgentDictationPillFinalTranscript?: (callback: (text: string) => void) => () => void;
 
       // STT config
-      getSttConfig?: () => Promise<
-        | ({
-            success: boolean;
-            dictation?: { mode: string };
-            notes?: { mode: string };
-            streamingProvider?: string;
-          } & PolicyFailureMetadata)
-        | null
-      >;
 
       // Org policy (see src/types/policy.ts)
       getWorkspacePolicy?: (
@@ -1434,8 +1465,6 @@ declare global {
               }
         ) => void
       ) => () => void;
-
-      getNoteRecordingConfig?: () => Promise<NoteRecordingConfigResult | null>;
 
       // Database operations
       saveTranscription: (
@@ -1514,39 +1543,6 @@ declare global {
         dataRetentionEnabled: boolean;
         localHistoryPolicyResolved: boolean;
       }) => void;
-      retryTranscription: (
-        id: number,
-        settings?: {
-          useLocalWhisper: boolean;
-          localTranscriptionProvider: string;
-          cloudTranscriptionMode: string;
-          cloudTranscriptionProvider: string;
-          cloudTranscriptionModel: string;
-          cloudTranscriptionBaseUrl?: string;
-          cortiEnvironment?: string;
-          cortiTenant?: string;
-          parakeetModel: string;
-          cohereModel: string;
-          whisperModel: string;
-          preferredLanguage?: string;
-          transcriptionMode?: InferenceMode;
-          remoteTranscriptionType?: SelfHostedType;
-          remoteTranscriptionUrl?: string;
-          remoteTranscriptionModel?: string;
-          managed?: {
-            kind: "managed";
-            provider: "azure";
-            deployment: string;
-            context: ManagedEnterpriseRequestContext;
-          };
-        }
-      ) => Promise<{
-        success: boolean;
-        transcription?: TranscriptionItem;
-        error?: string;
-        code?: TranscriptionErrorCode;
-        messageKey?: string;
-      }>;
       updateTranscriptionText: (
         id: number,
         text: string,
@@ -1622,16 +1618,11 @@ declare global {
       ) => Promise<{ success: boolean; error?: string }>;
       exportTranscript: (
         noteId: number,
-        format: "txt" | "srt" | "json" | "md"
+        format: "txt" | "srt" | "json" | "md",
+        source?: NoteTranscriptSource
       ) => Promise<{ success: boolean; error?: string }>;
       exportDictionary: (words: string[]) => Promise<{ success: boolean; error?: string }>;
       searchNotes: (
-        query: string,
-        limit?: number,
-        spaceId?: number | null,
-        folderId?: number | null
-      ) => Promise<NoteItem[]>;
-      semanticSearchNotes: (
         query: string,
         limit?: number,
         spaceId?: number | null,
@@ -1780,16 +1771,7 @@ declare global {
         filePaths?: string[];
       }>;
       getFileSize?: (filePath: string) => Promise<number>;
-      transcribeAudioFile: (
-        filePath: string,
-        options?: {
-          provider?: LocalTranscriptionProvider;
-          model?: string;
-          language?: string;
-          requestId?: string;
-          [key: string]: unknown;
-        }
-      ) => Promise<{ success: boolean; text?: string; error?: string; code?: string }>;
+
       getPathForFile: (file: File) => string;
 
       // URL audio download
@@ -1837,24 +1819,11 @@ declare global {
       onAnalyticsChanged?: (callback: () => void) => () => void;
 
       // API key management
-      getOpenAIKey: () => Promise<string>;
-      saveOpenAIKey: (key: string) => Promise<{ success: boolean }>;
-      getAnthropicKey: () => Promise<string | null>;
-      saveAnthropicKey: (key: string) => Promise<void>;
+
       getUiLanguage: () => Promise<string>;
       saveUiLanguage: (language: string) => Promise<{ success: boolean; language: string }>;
       setUiLanguage: (language: string) => Promise<{ success: boolean; language: string }>;
       saveAllKeysToEnv: () => Promise<{ success: boolean; path: string }>;
-      syncStartupPreferences: (
-        prefs: LocalServerPrefs & {
-          useLocalWhisper: boolean;
-          localTranscriptionProvider: LocalTranscriptionProvider;
-          model?: string;
-          language?: string;
-          keepLocalModelLoaded: boolean;
-          policySettled: boolean;
-        }
-      ) => Promise<void>;
 
       // Clipboard operations
       checkAccessibilityPermission: (silent?: boolean) => Promise<boolean>;
@@ -1871,206 +1840,33 @@ declare global {
       // Audio
 
       // Whisper operations (whisper.cpp)
-      transcribeLocalWhisper: (audioBlob: Blob | ArrayBuffer, options?: any) => Promise<any>;
-      checkWhisperInstallation: () => Promise<WhisperCheckResult>;
-      downloadWhisperModel: (modelName: string) => Promise<WhisperModelResult>;
-      onWhisperDownloadProgress: (
-        callback: (event: any, data: WhisperDownloadProgressData) => void
-      ) => () => void;
-      checkModelStatus: (modelName: string) => Promise<WhisperModelResult>;
-      listWhisperModels: () => Promise<WhisperModelsListResult>;
-      deleteWhisperModel: (modelName: string) => Promise<WhisperModelDeleteResult>;
-      deleteAllWhisperModels: () => Promise<{
-        success: boolean;
-        deleted_count?: number;
-        freed_bytes?: number;
-        freed_mb?: number;
-        error?: string;
-      }>;
-      cancelWhisperDownload: () => Promise<{
-        success: boolean;
-        message?: string;
-        error?: string;
-      }>;
 
       // Whisper server lifecycle
-      whisperServerStatus: () => Promise<WhisperServerStatus>;
-      whisperGpuRetry: () => Promise<{ success: boolean; willRestart: boolean }>;
 
       // CUDA GPU acceleration
       listGpus?: () => Promise<GpuDevice[]>;
-      setGpuDeviceIndex?: (
-        purpose: "transcription" | "intelligence",
-        uuid: string
-      ) => Promise<{ success: boolean }>;
+
       getGpuDeviceIndex?: (purpose: "transcription" | "intelligence") => Promise<string>;
       detectGpu: () => Promise<GpuInfo>;
-      getCudaWhisperStatus: () => Promise<CudaWhisperStatus>;
-      downloadCudaWhisperBinary: () => Promise<{
-        success: boolean;
-        willRestart?: boolean;
-        error?: string;
-      }>;
-      cancelCudaWhisperDownload: () => Promise<{ success: boolean }>;
-      deleteCudaWhisperBinary: () => Promise<{ success: boolean }>;
-      onCudaDownloadProgress: (
-        callback: (data: {
-          downloadedBytes: number;
-          totalBytes: number;
-          percentage: number;
-        }) => void
-      ) => () => void;
-      onCudaFallbackNotification: (callback: () => void) => () => void;
 
       // Vulkan GPU acceleration (whisper on AMD/Intel GPUs)
-      getVulkanWhisperStatus: () => Promise<VulkanWhisperStatus>;
-      downloadVulkanWhisperBinary: () => Promise<{
-        success: boolean;
-        willRestart?: boolean;
-        error?: string;
-      }>;
-      cancelVulkanWhisperDownload: () => Promise<{ success: boolean }>;
-      deleteVulkanWhisperBinary: () => Promise<{ success: boolean; deletedCount?: number }>;
-      onVulkanWhisperDownloadProgress: (
-        callback: (data: {
-          downloadedBytes: number;
-          totalBytes: number;
-          percentage: number;
-        }) => void
-      ) => () => void;
-      onGpuFallbackNotification: (callback: () => void) => () => void;
-      onWhisperGpuStatusChanged: (callback: () => void) => () => void;
 
       // One-time "GPU pack needs re-downloading" notice from the legacy-layout migration
-      getGpuPackMigrationNotice: () => Promise<{ packs: string[] } | null>;
-      dismissGpuPackMigrationNotice: () => Promise<{ success: boolean }>;
 
       // Parakeet operations (NVIDIA via sherpa-onnx)
-      transcribeLocalParakeet: (
-        audioBlob: ArrayBuffer,
-        options?: { model?: string; language?: string }
-      ) => Promise<ParakeetTranscriptionResult>;
-      checkParakeetInstallation: () => Promise<ParakeetCheckResult>;
-      downloadParakeetModel: (modelName: string) => Promise<ParakeetModelResult>;
-      onParakeetDownloadProgress: (
-        callback: (event: any, data: ParakeetDownloadProgressData) => void
-      ) => () => void;
-      checkParakeetModelStatus: (modelName: string) => Promise<ParakeetModelResult>;
-      listParakeetModels: () => Promise<ParakeetModelsListResult>;
-      deleteParakeetModel: (modelName: string) => Promise<ParakeetModelDeleteResult>;
-      deleteAllParakeetModels: () => Promise<{
-        success: boolean;
-        deleted_count?: number;
-        freed_bytes?: number;
-        freed_mb?: number;
-        error?: string;
-      }>;
-      cancelParakeetDownload: () => Promise<
-        {
-          success: boolean;
-          message?: string;
-        } & PolicyFailureMetadata
-      >;
-      getParakeetDiagnostics: () => Promise<ParakeetDiagnosticsResult>;
 
       // Local AI model management
-      modelGetAll: () => Promise<LocalLLMModelStatus[]>;
-      modelGetActiveDownloads: () => Promise<LocalModelDownloadStatus[]>;
-      modelCheck: (modelId: string) => Promise<boolean>;
-      modelDownload: (modelId: string) => Promise<{
-        success: boolean;
-        path?: string;
-        error?: string;
-        code?: string;
-        details?: string;
-      }>;
-      modelDelete: (modelId: string) => Promise<{
-        success: boolean;
-        error?: string;
-        code?: string;
-        details?: string;
-      }>;
-      modelDeleteAll: () => Promise<{
-        success: boolean;
-        error?: string;
-        code?: string;
-        details?: string;
-      }>;
-      modelCheckRuntime: () => Promise<{
-        available: boolean;
-        error?: string;
-        code?: string;
-        details?: string;
-      }>;
-      modelCancelDownload: (modelId: string) => Promise<{ success: boolean; error?: string }>;
-      onModelDownloadProgress: (
-        callback: (event: any, data: LocalLLMDownloadProgressEvent) => void
-      ) => () => void;
 
       // Local reasoning
-      processLocalReasoning: (
-        text: string,
-        modelId: string,
-        agentName: string | null,
-        config: any
-      ) => Promise<{
-        success: boolean;
-        text?: string;
-        error?: string;
-        code?: string;
-        details?: Record<string, unknown>;
-      }>;
-      checkLocalReasoningAvailable: () => Promise<boolean>;
+
       /** The largest context this machine can give a bundled model; drives chunked note generation. */
-      getLocalContextBudget: (modelId: string) => Promise<{
-        success: boolean;
-        maxContextTokens?: number;
-        modelName?: string;
-        error?: string;
-      }>;
+
       /** Aborts the local request tagged with this `requestId`, if it is still in flight. */
-      cancelLocalReasoning: (requestId: string) => Promise<void>;
 
       // Anthropic reasoning
-      processAnthropicReasoning: (
-        text: string,
-        modelId: string,
-        agentName: string | null,
-        config: any
-      ) => Promise<{ success: boolean; text?: string } & Partial<IpcErrorFields>>;
 
       // Enterprise reasoning (Bedrock, Azure, Vertex)
-      processEnterpriseReasoning: (
-        text: string,
-        modelId: string,
-        agentName: string | null,
-        config: any
-      ) => Promise<{
-        success: boolean;
-        text?: string;
-        error?: string;
-        messageKey?: string;
-        messageParams?: Record<string, string | number>;
-        action?: string;
-        actionKey?: string;
-        copyCommand?: string;
-        retryable?: boolean;
-        technicalDetails?: {
-          status?: number;
-          exceptionType?: string;
-          requestId?: string;
-          underlyingError?: string;
-        };
-      }>;
-      cancelEnterpriseReasoning?: () => void;
-      enterpriseStreamStart?: (payload: {
-        streamId: string;
-        provider: string;
-        modelId: string;
-        config: Record<string, unknown>;
-        options: Record<string, unknown>;
-      }) => Promise<{ success: boolean; error?: string }>;
-      enterpriseStreamCancel?: (streamId: string) => Promise<void>;
+
       onEnterpriseStreamPart?: (
         callback: (payload: {
           streamId: string;
@@ -2079,39 +1875,12 @@ declare global {
           error?: string;
         }) => void
       ) => () => void;
-      listBedrockModels?: (config: Record<string, unknown>) => Promise<{
-        success: boolean;
-        models?: Array<{ value: string; label: string; vendor: string }>;
-        error?: string;
-      }>;
 
       // llama.cpp management
-      llamaCppCheck: () => Promise<{ isInstalled: boolean; version?: string }>;
-      llamaCppInstall: () => Promise<{ success: boolean; error?: string }>;
-      llamaCppUninstall: () => Promise<{ success: boolean; error?: string }>;
 
       // llama-server
-      llamaServerStart: (
-        modelId: string
-      ) => Promise<{ success: boolean; port?: number; error?: string }>;
-      llamaServerStatus: () => Promise<LlamaServerStatus>;
-      llamaGpuReset: () => Promise<{ success: boolean; error?: string }>;
+
       detectVulkanGpu?: () => Promise<VulkanGpuResult>;
-      getLlamaVulkanStatus?: () => Promise<LlamaVulkanStatus>;
-      downloadLlamaVulkanBinary?: () => Promise<{
-        success: boolean;
-        cancelled?: boolean;
-        error?: string;
-      }>;
-      cancelLlamaVulkanDownload?: () => Promise<{ success: boolean }>;
-      deleteLlamaVulkanBinary?: () => Promise<{
-        success: boolean;
-        deletedCount?: number;
-        error?: string;
-      }>;
-      onLlamaVulkanDownloadProgress?: (
-        callback: (data: LlamaVulkanDownloadProgress) => void
-      ) => () => void;
 
       // Window control operations
       windowMinimize: () => Promise<void>;
@@ -2162,18 +1931,13 @@ declare global {
       relaunchApp: () => Promise<void>;
 
       // Update operations
-      checkForUpdates: () => Promise<UpdateCheckResult>;
-      downloadUpdate: () => Promise<UpdateResult>;
-      installUpdate: () => Promise<UpdateResult>;
+
       getAppVersion: () => Promise<AppVersionResult>;
       getPostMigrationState: () => Promise<{ justMigrated: boolean }>;
       getOAuthProtocolRegistered: () => Promise<boolean>;
       getOAuthProtocol: () => Promise<string>;
       markBundleMigrated: () => Promise<void>;
       markBundleMigrationDismissed: () => Promise<void>;
-      getUpdateStatus: () => Promise<UpdateStatusResult>;
-      getUpdateInfo: () => Promise<UpdateInfoResult | null>;
-      setAutoUpdatesEnabled: (enabled: boolean) => Promise<{ success: boolean }>;
 
       // Update event listeners
       onUpdateAvailable: (callback: (event: any, info: any) => void) => () => void;
@@ -2242,125 +2006,19 @@ declare global {
       checkAccessibilityTrusted?: () => Promise<boolean>;
 
       // Gemini API key management
-      getGeminiKey: () => Promise<string | null>;
-      saveGeminiKey: (key: string) => Promise<void>;
-      proxyGeminiTranscription?: (data: {
-        audioBuffer: ArrayBuffer;
-        model?: string;
-        language?: string;
-        keyterms?: string[];
-      }) => Promise<ProxyTranscriptionResult>;
 
       // Groq API key management
-      getGroqKey: () => Promise<string | null>;
-      saveGroqKey: (key: string) => Promise<void>;
-      getOpenrouterKey: () => Promise<string | null>;
-      saveOpenrouterKey: (key: string) => Promise<void>;
 
       // xAI API key management
-      getXaiKey?: () => Promise<string | null>;
-      saveXaiKey?: (key: string) => Promise<void>;
-      proxyXaiTranscription?: (data: {
-        audioBuffer: ArrayBuffer;
-        language?: string;
-        keyterms?: string[];
-      }) => Promise<ProxyTranscriptionResult>;
 
       // Mistral API key management
-      getMistralKey: () => Promise<string | null>;
-      saveMistralKey: (key: string) => Promise<void>;
-      proxyMistralTranscription: (data: {
-        audioBuffer: ArrayBuffer;
-        model?: string;
-        language?: string;
-        contextBias?: string[];
-      }) => Promise<ProxyTranscriptionResult>;
 
       // Corti credential management
-      getCortiClientId?: () => Promise<string | null>;
-      saveCortiClientId?: (key: string) => Promise<void>;
-      getCortiClientSecret?: () => Promise<string | null>;
-      saveCortiClientSecret?: (key: string) => Promise<void>;
-      getCortiKey?: () => Promise<string | null>;
-      saveCortiKey?: (key: string) => Promise<void>;
-      proxyCortiTranscription?: (data: {
-        audioBuffer: ArrayBuffer;
-        language: string;
-        environment: string;
-        tenant: string;
-      }) => Promise<ProxyTranscriptionResult>;
-      getTinfoilKey?: () => Promise<string | null>;
-      saveTinfoilKey?: (key: string) => Promise<void>;
-      getTinfoilChatModels?: () => Promise<TinfoilCatalogModel[]>;
-      proxyTinfoilTranscription?: (data: {
-        audioBuffer: ArrayBuffer;
-        language?: string;
-        prompt?: string;
-      }) => Promise<ProxyTranscriptionResult>;
-      getDeepgramKey?: () => Promise<string | null>;
-      saveDeepgramKey?: (key: string) => Promise<void>;
-      getAssemblyAIKey?: () => Promise<string | null>;
-      saveAssemblyAIKey?: (key: string) => Promise<void>;
 
       // Custom endpoint API keys
-      getCustomTranscriptionKey?: () => Promise<string | null>;
-      saveCustomTranscriptionKey?: (key: string) => Promise<void>;
-      getCleanupCustomKey?: () => Promise<string | null>;
-      saveCleanupCustomKey?: (key: string) => Promise<void>;
-      getNoteFormattingCustomKey?: () => Promise<string | null>;
-      saveNoteFormattingCustomKey?: (key: string) => Promise<void>;
-      getTranslationCustomKey?: () => Promise<string | null>;
-      saveTranslationCustomKey?: (key: string) => Promise<void>;
-      getDictationAgentCustomKey?: () => Promise<string | null>;
-      saveDictationAgentCustomKey?: (key: string) => Promise<void>;
-      getDictationAgentVisionCustomKey?: () => Promise<string | null>;
-      saveDictationAgentVisionCustomKey?: (key: string) => Promise<void>;
-      getChatAgentCustomKey?: () => Promise<string | null>;
-      saveChatAgentCustomKey?: (key: string) => Promise<void>;
 
       // Enterprise provider key persistence
-      getBedrockRegion?: () => Promise<string | null>;
-      saveBedrockRegion?: (value: string) => Promise<void>;
-      getBedrockProfile?: () => Promise<string | null>;
-      saveBedrockProfile?: (value: string) => Promise<void>;
-      getBedrockAccessKeyId?: () => Promise<string | null>;
-      saveBedrockAccessKeyId?: (key: string) => Promise<void>;
-      getBedrockSecretAccessKey?: () => Promise<string | null>;
-      saveBedrockSecretAccessKey?: (key: string) => Promise<void>;
-      getBedrockSessionToken?: () => Promise<string | null>;
-      saveBedrockSessionToken?: (key: string) => Promise<void>;
-      getAzureEndpoint?: () => Promise<string | null>;
-      saveAzureEndpoint?: (value: string) => Promise<void>;
-      getAzureApiKey?: () => Promise<string | null>;
-      saveAzureApiKey?: (key: string) => Promise<void>;
-      getAzureDeployment?: () => Promise<string | null>;
-      saveAzureDeployment?: (value: string) => Promise<void>;
-      getAzureApiVersion?: () => Promise<string | null>;
-      saveAzureApiVersion?: (value: string) => Promise<void>;
-      getVertexProject?: () => Promise<string | null>;
-      saveVertexProject?: (value: string) => Promise<void>;
-      getVertexLocation?: () => Promise<string | null>;
-      saveVertexLocation?: (value: string) => Promise<void>;
-      getVertexApiKey?: () => Promise<string | null>;
-      saveVertexApiKey?: (key: string) => Promise<void>;
-      testEnterpriseConnection?: (
-        provider: string,
-        config: Record<string, unknown>
-      ) => Promise<{
-        success: boolean;
-        error?: string;
-        messageKey?: string;
-        messageParams?: Record<string, string | number>;
-        action?: string;
-        actionKey?: string;
-        copyCommand?: string;
-        technicalDetails?: {
-          status?: number;
-          exceptionType?: string;
-          requestId?: string;
-          underlyingError?: string;
-        };
-      }>;
+
       getManagedEnterpriseConfig?: (
         accountId: string,
         workspaceId: string,
@@ -2390,14 +2048,6 @@ declare global {
         }) => void
       ) => () => void;
       clearManagedEnterpriseIdentity?: () => Promise<void>;
-      managedTranscribe?: (data: {
-        audioBuffer: ArrayBuffer;
-        fileName: string;
-        mimeType: string;
-        language?: string;
-        prompt?: string;
-        managed: { provider: "azure"; context: ManagedEnterpriseRequestContext };
-      }) => Promise<{ text?: string; error?: string; code?: string; messageKey?: string }>;
 
       // Dictation key persistence (file-based for reliable startup)
       getDictationKey?: () => Promise<string | null>;
@@ -2433,7 +2083,6 @@ declare global {
 
       // FFmpeg availability
       checkFFmpegAvailability: () => Promise<FFmpegAvailabilityResult>;
-      getAudioDiagnostics: () => Promise<AudioDiagnosticsResult>;
 
       // System settings helpers
       requestMicrophoneAccess?: () => Promise<{ granted: boolean }>;
@@ -2451,7 +2100,6 @@ declare global {
       openAccessibilitySettings?: () => Promise<{ success: boolean; error?: string }>;
       openSystemAudioSettings?: () => Promise<{ success: boolean; error?: string }>;
       openScreenRecordingSettings?: () => Promise<{ success: boolean; error?: string }>;
-      openLoginItemsSettings?: () => Promise<{ success: boolean; error?: string }>;
       checkScreenRecordingAccess?: () => Promise<ScreenRecordingAccessResult>;
       requestScreenRecordingAccess?: () => Promise<ScreenRecordingAccessResult>;
       captureScreenContext?: () => Promise<ScreenContextImage | null>;
@@ -2459,8 +2107,6 @@ declare global {
       toggleMediaPlayback?: () => Promise<boolean>;
       pauseMediaPlayback?: () => Promise<boolean>;
       resumeMediaPlayback?: () => Promise<boolean>;
-      getModelCacheRoot?: () => Promise<string>;
-      openWhisperModelsFolder?: () => Promise<{ success: boolean; error?: string }>;
 
       // Windows Push-to-Talk notifications
       notifyActivationModeChanged?: (mode: "tap" | "push") => void;
@@ -2484,8 +2130,6 @@ declare global {
       // Auto-start at login. requiresApproval is macOS-only: SMAppService can
       // register the login item and still leave it awaiting approval in System
       // Settings, which otherwise looks like a toggle that will not stick.
-      getAutoStartEnabled?: () => Promise<{ enabled: boolean; requiresApproval: boolean }>;
-      setAutoStartEnabled?: (enabled: boolean) => Promise<{ success: boolean; error?: string }>;
 
       // Auth
       authClearSession?: () => Promise<{
@@ -2504,58 +2148,7 @@ declare global {
       ) => () => void;
 
       // OpenWhispr Cloud API
-      cloudTranscribe?: (
-        audioBuffer: ArrayBuffer,
-        opts: {
-          language?: string;
-          prompt?: string;
-          useCase?: string;
-          diarization?: boolean;
-          localDate?: string;
-          analyticsOccurredAt?: string;
-          // Why a managed-streaming user's dictation went batch (rollout metric).
-          streamingFallbackReason?: string;
-        } & SttDetectedLanguageFields
-      ) => Promise<
-        {
-          success: boolean;
-          text?: string;
-          warning?: string;
-          clientTranscriptionId?: string;
-          wordsUsed?: number;
-          wordsRemaining?: number;
-          limitReached?: boolean;
-        } & PolicyFailureMetadata
-      >;
-      cancelCloudTranscription?: () => void;
-      cloudReason?: (
-        text: string,
-        opts: {
-          model?: string;
-          agentName?: string;
-          customDictionary?: string[];
-          customPrompt?: string;
-          systemPrompt?: string;
-          requestPurpose?: "agent";
-          promptMode?: "cleanup" | "agent";
-          purpose?: CloudReasonPurpose;
-          screenContext?: ScreenContextImage;
-          language?: string;
-          locale?: string;
-          streamingFallbackReason?: string;
-        } & SttDetectedLanguageFields
-      ) => Promise<{
-        success: boolean;
-        text?: string;
-        model?: string;
-        provider?: string;
-        promptMode?: string;
-        matchType?: string;
-        screenContextApplied?: boolean;
-        error?: string;
-        code?: string;
-      }>;
-      cancelCloudReason?: () => void;
+
       cloudStreamingUsage?: (
         text: string,
         audioDurationSeconds: number,
@@ -2649,53 +2242,19 @@ declare global {
       >;
 
       // Cloud audio file transcription
-      transcribeAudioFileCloud?: (
-        filePath: string,
-        options?: { requestId?: string }
-      ) => Promise<
-        {
-          success: boolean;
-          text?: string;
-          warning?: string;
-          failedChunks?: number;
-          totalChunks?: number;
-        } & PolicyFailureMetadata
-      >;
 
       cancelUploadTranscription?: (requestId: string) => Promise<{ success: boolean }>;
 
       onUploadTranscriptionProgress?: (
-        callback: (data: { stage: string; chunksTotal: number; chunksCompleted: number }) => void
+        callback: (data: {
+          stage: string;
+          requestId?: string;
+          chunksTotal: number;
+          chunksCompleted: number;
+        }) => void
       ) => () => void;
 
       // BYOK audio file transcription
-      transcribeAudioFileByok?: (options: {
-        filePath: string;
-        apiKey: string;
-        baseUrl: string;
-        model: string;
-        diarize?: boolean;
-        timestamps?: boolean;
-        provider?: string;
-        language?: string;
-        environment?: string;
-        tenant?: string;
-        transcriptionMode?: string;
-        remoteTranscriptionUrl?: string;
-        remoteTranscriptionModel?: string;
-        managed?: {
-          kind: "managed";
-          provider: "azure";
-          deployment: string;
-          context: ManagedEnterpriseRequestContext;
-        };
-      }) => Promise<{
-        success: boolean;
-        text?: string;
-        error?: string;
-        diarized?: boolean;
-        segments?: Array<{ text: string; start: number; end: number; speaker?: string }>;
-      }>;
 
       // Usage limit events
       notifyLimitReached?: (data: { wordsUsed: number; limit: number }) => void;
@@ -2708,29 +2267,7 @@ declare global {
       getPendingInvitationToken?: () => Promise<string | null>;
 
       // AssemblyAI Streaming
-      assemblyAiStreamingWarmup?: (options?: { sampleRate?: number; language?: string }) => Promise<
-        {
-          success: boolean;
-          alreadyWarm?: boolean;
-        } & PolicyFailureMetadata
-      >;
-      assemblyAiStreamingStart?: (options?: { sampleRate?: number; language?: string }) => Promise<
-        {
-          success: boolean;
-          usedWarmConnection?: boolean;
-        } & PolicyFailureMetadata
-      >;
-      assemblyAiStreamingSend?: (audioBuffer: ArrayBuffer) => void;
-      assemblyAiStreamingForceEndpoint?: () => void;
-      assemblyAiStreamingStop?: () => Promise<{
-        success: boolean;
-        text?: string;
-        error?: string;
-      }>;
-      assemblyAiStreamingStatus?: () => Promise<{
-        isConnected: boolean;
-        sessionId: string | null;
-      }>;
+
       onAssemblyAiPartialTranscript?: (callback: (text: string) => void) => () => void;
       onAssemblyAiFinalTranscript?: (callback: (text: string) => void) => () => void;
       onAssemblyAiError?: (callback: (error: string) => void) => () => void;
@@ -2887,39 +2424,9 @@ declare global {
         id: number,
         cloudId: string
       ) => Promise<{ success: boolean }>;
-      semanticSearchConversations?: (
-        query: string,
-        limit?: number
-      ) => Promise<ConversationPreview[]>;
 
       // Deepgram Streaming
-      deepgramStreamingWarmup?: (options?: { sampleRate?: number; language?: string }) => Promise<{
-        success: boolean;
-        alreadyWarm?: boolean;
-        error?: string;
-        code?: string;
-      }>;
-      deepgramStreamingStart?: (options?: {
-        sampleRate?: number;
-        language?: string;
-        forceNew?: boolean;
-      }) => Promise<
-        {
-          success: boolean;
-          usedWarmConnection?: boolean;
-        } & PolicyFailureMetadata
-      >;
-      deepgramStreamingSend?: (audioBuffer: ArrayBuffer) => void;
-      deepgramStreamingFinalize?: () => void;
-      deepgramStreamingStop?: () => Promise<{
-        success: boolean;
-        text?: string;
-        error?: string;
-      }>;
-      deepgramStreamingStatus?: () => Promise<{
-        isConnected: boolean;
-        sessionId: string | null;
-      }>;
+
       onDeepgramPartialTranscript?: (callback: (text: string) => void) => () => void;
       onDeepgramFinalTranscript?: (callback: (text: string) => void) => () => void;
       onDeepgramError?: (callback: (error: string) => void) => () => void;
@@ -2928,87 +2435,20 @@ declare global {
       ) => () => void;
 
       // Gemini Live Streaming
-      geminiStreamingWarmup?: (
-        options?: DictationRealtimeSessionOptions
-      ) => Promise<
-        { success: boolean; alreadyWarm?: boolean; error?: string } & PolicyFailureMetadata
-      >;
-      geminiStreamingStart?: (
-        options?: DictationRealtimeSessionOptions & { forceNew?: boolean }
-      ) => Promise<
-        { success: boolean; usedWarmConnection?: boolean; error?: string } & PolicyFailureMetadata
-      >;
-      geminiStreamingSend?: (audioBuffer: ArrayBuffer) => void;
-      geminiStreamingFinalize?: () => void;
-      geminiStreamingStop?: () => Promise<{
-        success: boolean;
-        text?: string;
-        model?: string;
-        audioBytesSent?: number;
-        error?: string;
-      }>;
-      geminiStreamingStatus?: () => Promise<{ isConnected: boolean; isConnecting: boolean }>;
+
       onGeminiPartialTranscript?: (callback: (text: string) => void) => () => void;
       onGeminiFinalTranscript?: (callback: (text: string) => void) => () => void;
       onGeminiError?: (callback: (error: string) => void) => () => void;
       onGeminiSessionEnd?: (callback: (data: { text?: string }) => void) => () => void;
 
       // Corti streaming (BYOK)
-      cortiStreamingWarmup?: (options?: {
-        environment?: string;
-        tenant?: string;
-        language?: string;
-        keyterms?: string[];
-      }) => Promise<{ success: boolean } & PolicyFailureMetadata>;
-      cortiStreamingStart?: (options?: {
-        environment?: string;
-        tenant?: string;
-        language?: string;
-        keyterms?: string[];
-      }) => Promise<{ success: boolean } & PolicyFailureMetadata>;
-      cortiStreamingSend?: (audioBuffer: ArrayBuffer) => void;
-      cortiStreamingFinalize?: () => void;
-      cortiStreamingStop?: () => Promise<{
-        success: boolean;
-        text?: string;
-        model?: string;
-        audioBytesSent?: number;
-        error?: string;
-      }>;
-      cortiStreamingStatus?: () => Promise<{ isConnected: boolean; sessionId: string | null }>;
+
       onCortiPartialTranscript?: (callback: (text: string) => void) => () => void;
       onCortiFinalTranscript?: (callback: (text: string) => void) => () => void;
       onCortiError?: (callback: (error: string) => void) => () => void;
       onCortiSessionEnd?: (callback: (data: { text?: string }) => void) => () => void;
 
       // Agent cloud streaming (event-based)
-      startAgentStream?: (
-        requestId: string,
-        messages: Array<{ role: string; content: string | Array<unknown> }>,
-        opts?: {
-          systemPrompt?: string;
-          tools?: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
-          screenContext?: { data: string; mediaType: string };
-        }
-      ) => void;
-      cancelAgentStream?: (requestId: string) => void;
-      onAgentStreamChunk?: (
-        callback: (payload: {
-          requestId: string;
-          chunk: {
-            type: "content" | "tool_call" | "done";
-            text?: string;
-            id?: string;
-            name?: string;
-            arguments?: string;
-            finishReason?: string;
-          };
-        }) => void
-      ) => () => void;
-      onAgentStreamError?: (
-        callback: (payload: PolicyFailureMetadata & { requestId: string; error: string }) => void
-      ) => () => void;
-      onAgentStreamEnd?: (callback: (payload: { requestId: string }) => void) => () => void;
 
       // Agent cloud tools
       agentOpenNote?: (noteId: number) => Promise<{ success: boolean; error?: string }>;
@@ -3133,6 +2573,8 @@ declare global {
         provider?: string;
         model?: string;
         language?: string;
+        prompt?: string;
+        diarization?: boolean;
         noteId?: number | null;
         sessionId: string;
         autoEndEligible: boolean;
@@ -3147,7 +2589,11 @@ declare global {
           oneOnOneAttendee?: { displayName: string; email: string | null } | null;
         } & PolicyFailureMetadata
       >;
-      meetingTranscriptionSend?: (buffer: ArrayBuffer, source: "mic" | "system") => void;
+      meetingTranscriptionSend?: (
+        buffer: ArrayBuffer,
+        source: "mic" | "system",
+        sessionId: string
+      ) => void;
       meetingTranscriptionSetSystemAudioAvailable?: (
         sessionId: string,
         available: boolean
@@ -3155,21 +2601,23 @@ declare global {
       meetingTranscriptionStop?: (expectedSessionId?: string) => Promise<{
         success: boolean;
         transcript?: string;
+        segments?: import("../stores/meetingRecordingStore").TranscriptSegment[];
         diarizationSessionId?: string;
         error?: string;
-        reason?: "stale-session";
+        reason?: "stale-session" | "canceled";
+        mediaRetained?: boolean;
+        messageKey?: string;
+        messageParams?: Record<string, string | number>;
       }>;
-      meetingTranscriptionCancel?: () => Promise<{
+      meetingTranscriptionCancel?: (expectedSessionId: string) => Promise<{
         success: boolean;
-        reason?: "recording-active";
+        reason?: "stale-session" | "wrong-owner" | "not-finalizing" | "canceled";
+        error?: string;
+        messageKey?: string;
+        messageParams?: Record<string, string | number>;
       }>;
       onMeetingTranscriptionSegment?: (
-        callback: (data: {
-          text: string;
-          source: "mic" | "system";
-          type: "partial" | "final" | "retract";
-          timestamp?: number;
-        }) => void
+        callback: (data: import("../stores/meetingSegmentReducer").MeetingSegmentEvent) => void
       ) => () => void;
       onMeetingSpeakerIdentified?: (
         callback: (data: {
@@ -3193,7 +2641,9 @@ declare global {
         callback: (config: { enabled: boolean; expectedCount: number }) => void
       ) => () => void;
       onMeetingTranscriptionError?: (callback: (error: string) => void) => () => void;
-      onMeetingTranscriptionFatalError?: (callback: (error: string) => void) => () => void;
+      onMeetingTranscriptionFatalError?: (
+        callback: (error: MeetingTranscriptionFailure) => void
+      ) => () => void;
       onMeetingSystemAudioSilent?: (
         callback: (data: { systemAudioStrategy: SystemAudioStrategy }) => void
       ) => () => void;
@@ -3202,56 +2652,6 @@ declare global {
         callback: (data: MeetingSystemAudioInterruption) => void
       ) => () => void;
       onMeetingSystemAudioResumed?: (callback: () => void) => () => void;
-
-      // Speaker diarization
-      downloadDiarizationModels?: () => Promise<{ success: boolean; error?: string }>;
-      getDiarizationModelStatus?: () => Promise<{
-        available: boolean;
-        modelsDownloaded: boolean;
-      }>;
-      deleteDiarizationModels?: () => Promise<{ success: boolean }>;
-      cancelDiarizationDownload?: () => Promise<{
-        success: boolean;
-        message?: string;
-        error?: string;
-      }>;
-      mergeSpeakerText?: (
-        segments: Array<{ start: number; end: number; speaker: string }>,
-        text: string,
-        duration: number
-      ) => Promise<{ success: boolean; text?: string; error?: string }>;
-      diarizeAudioFile?: (
-        filePath: string,
-        options?: { numSpeakers?: number; threshold?: number; requestId?: string }
-      ) => Promise<{
-        success: boolean;
-        segments?: Array<{ start: number; end: number; speaker: string }>;
-        durationSeconds?: number;
-        error?: string;
-        code?: string;
-      }>;
-      onDiarizationDownloadProgress?: (callback: (data: any) => void) => () => void;
-      onMeetingDiarizationComplete?: (
-        callback: (data: {
-          sessionId?: string;
-          noteId?: number | null;
-          segments: Array<{
-            id: string;
-            text: string;
-            source: "mic" | "system";
-            timestamp?: number;
-            speaker?: string;
-            speakerName?: string;
-            speakerIsPlaceholder?: boolean;
-            suggestedName?: string;
-            suggestedProfileId?: number;
-            speakerStatus?: "provisional" | "confirmed" | "suggested" | "locked";
-            speakerLocked?: boolean;
-            speakerLockSource?: "user" | "diarization" | "suggestion";
-          }>;
-          speakerEmbeddings?: Record<string, number[]> | null;
-        }) => void
-      ) => () => void;
 
       // Speaker name mapping
       getSpeakerMappings?: (noteId: number) => Promise<
@@ -3293,11 +2693,6 @@ declare global {
           sample_count: number;
         };
       }>;
-      saveNoteSpeakerEmbeddings?: (
-        noteId: number,
-        embeddings: Record<string, number[]>
-      ) => Promise<{ success: boolean }>;
-
       // Dictation realtime streaming
       dictationRealtimeWarmup?: (
         options: DictationRealtimeSessionOptions
@@ -3366,32 +2761,7 @@ declare global {
         expectedCount: number;
         countIsExplicit?: boolean;
       }) => Promise<{ success: boolean; error?: string }>;
-      getWhisperVadConfig?: () => Promise<{
-        success: boolean;
-        config?: {
-          dictationSileroEnabled: boolean;
-          noteRecordingSileroEnabled: boolean;
-          meetingSileroEnabled: boolean;
-          threshold: number;
-          minSpeechDurationMs: number;
-          minSilenceDurationMs: number;
-          maxSpeechDurationS: number;
-          speechPadMs: number;
-          samplesOverlap: number;
-        };
-        error?: string;
-      }>;
-      setWhisperVadConfig?: (config: {
-        dictationSileroEnabled?: boolean;
-        noteRecordingSileroEnabled?: boolean;
-        meetingSileroEnabled?: boolean;
-        threshold?: number;
-        minSpeechDurationMs?: number;
-        minSilenceDurationMs?: number;
-        maxSpeechDurationS?: number;
-        speechPadMs?: number;
-        samplesOverlap?: number;
-      }) => Promise<{ success: boolean; config?: Record<string, unknown>; error?: string }>;
+
       onMeetingNotificationData?: (callback: (data: MeetingNotificationData) => void) => () => void;
       onMeetingAutoEndRequested?: (
         callback: (request: MeetingAutoEndRequest) => void
@@ -3451,12 +2821,7 @@ declare global {
       onPreviewHold?: (callback: (payload: { showCleanup: boolean }) => void) => () => void;
       onPreviewResult?: (callback: (payload: { text: string }) => void) => () => void;
       onPreviewHide?: (callback: () => void) => () => void;
-      startDictationPreview?: (opts: {
-        provider: string;
-        model: string;
-        language?: string;
-        display?: boolean;
-      }) => Promise<{ success: boolean }>;
+      startDictationPreview?: (opts: { display?: boolean }) => Promise<{ success: boolean }>;
       stopDictationPreview?: (opts?: {
         showCleanup?: boolean;
         flushed?: boolean;
@@ -3465,7 +2830,6 @@ declare global {
       updateDictationPreview?: (text: string) => Promise<{ success: boolean }>;
       completeDictationPreview?: (payload: { text?: string }) => Promise<{ success: boolean }>;
       hideDictationPreview?: () => Promise<{ success: boolean }>;
-      sendDictationPreviewAudio?: (data: ArrayBuffer) => void;
 
       // Sync operations
       getPendingNotes?: (spaceKind?: "private" | "team") => Promise<NoteItem[]>;

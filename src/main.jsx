@@ -5,13 +5,14 @@ import AppRouter from "./AppRouter.jsx";
 import ErrorBoundary from "./components/ErrorBoundary.tsx";
 import CleanupFailureToastListener from "./components/CleanupFailureToastListener.tsx";
 import TinfoilModelSwitchToastListener from "./components/TinfoilModelSwitchToastListener.tsx";
-import GpuPackMigrationToastListener from "./components/GpuPackMigrationToastListener.tsx";
+
 import { I18nDirectionProvider } from "./components/I18nDirectionProvider.tsx";
 import { ToastProvider } from "./components/ui/Toast.tsx";
 import { SettingsProvider } from "./hooks/useSettings";
 import { bindDocumentLanguage } from "./utils/i18nDocument";
 
 import i18n from "./i18n";
+import { installNimiShellRuntimeBridge } from "@nimiplatform/kit/shell/renderer/bridge";
 // Self-hosted so it works offline and makes no network call — the "opsz" build
 // carries Inter's optical-size axis, so large display text picks up the Inter
 // Display shaping automatically. Declaring the face is global; only the
@@ -21,9 +22,11 @@ import "@fontsource-variable/caveat";
 import "./brandFonts";
 import "./index.css";
 
+installNimiShellRuntimeBridge();
 bindDocumentLanguage(i18n, document.documentElement, import.meta.hot);
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
+// Keep one React owner for the native window through entry-module hot updates.
+const root = import.meta.hot?.data.root ?? ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
@@ -33,7 +36,7 @@ root.render(
             <ToastProvider>
               <TinfoilModelSwitchToastListener />
               <CleanupFailureToastListener />
-              <GpuPackMigrationToastListener />
+
               <AppRouter />
             </ToastProvider>
           </SettingsProvider>
@@ -44,5 +47,8 @@ root.render(
 );
 
 if (import.meta.hot) {
+  import.meta.hot.dispose((data) => {
+    data.root = root;
+  });
   import.meta.hot.accept();
 }

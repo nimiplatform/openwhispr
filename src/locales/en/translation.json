@@ -677,6 +677,9 @@
       "retryTranscription": "Re-transcribe",
       "retrying": "Re-transcribing...",
       "retrySuccess": "Transcription updated",
+      "recordedFailureReason": "Recorded failure reason: {{reason}}",
+      "retryNotificationWarning": "Transcription saved; some windows could not be notified.",
+      "retryEditingWarning": "Transcription saved; some text editing did not complete.",
       "retryError": "Failed to re-transcribe",
       "audioNotFound": "Audio file not found or expired",
       "noAiProcessing": "No AI processing was applied to this transcription",
@@ -902,7 +905,8 @@
         "agentUnavailable": "Assistant Unavailable",
         "screenContextSkipped": "Screen Context Skipped",
         "dailyLimitReached": "Daily Limit Reached",
-        "providerRateLimited": "Provider Rate Limited"
+        "providerRateLimited": "Provider Rate Limited",
+        "cancellationUnconfirmed": "Cancellation not confirmed"
       },
       "fallback": {
         "title": "Fallback Mode",
@@ -984,7 +988,8 @@
       },
       "pasteFailed": {
         "title": "Couldn't paste automatically"
-      }
+      },
+      "dictionaryPromptTooLong": "The transcription dictionary is too long. Reduce its entries and try again."
     },
     "clipboard": {
       "pasteFailed": {
@@ -3425,9 +3430,9 @@
       "transcriptionFailed": "Transcription failed",
       "errorOccurred": "An error occurred",
       "noSpeechDetected": "No speech detected in this audio.",
-      "noProviderTitle": "No transcription provider set up",
-      "noProviderDescription": "Add an API key or download a local model to start transcribing.",
-      "noProviderAction": "Open Transcription Settings",
+      "noProviderTitle": "Nimi transcription is unavailable",
+      "noProviderDescription": "Choose an available speech-to-text model in Nimi. If your session has expired, sign in to Nimi and try again.",
+      "noProviderAction": "Open Nimi model settings",
       "fileTooLarge": "This file exceeds the 500 MB limit.",
       "paidPlanRequired": "Cloud transcription for files over 25 MB requires a paid plan. Large files are processed with OpenWhispr Cloud for reliable, high-quality results.",
       "largeFileNote": "Large files are split and transcribed in parallel.",
@@ -3501,7 +3506,11 @@
       "systemAudioQuiet": {
         "title": "Meeting audio has gone quiet",
         "description": "No one has been heard for a few minutes. If the call is still going, check your sound output device."
-      }
+      },
+      "finishing": "Finishing transcription and saving…",
+      "cancelFinishing": "Stop processing; keep recording",
+      "saved": "Transcription and recording saved",
+      "canceled": "Processing canceled; recording kept"
     },
     "meetingPill": {
       "returnToNote": "Return to recording",
@@ -3606,7 +3615,7 @@
         }
       },
       "errors": {
-        "noModel": "No AI model selected. Configure one in Settings.",
+        "noModel": "No Nimi text model is available. Choose one in Nimi model settings.",
         "actionFailed": "Action failed",
         "noEndpoint": "No self-hosted server URL set. Configure one in Settings.",
         "outputTruncated": "The AI model ran out of room before it finished, so the note was left as it was.",
@@ -4851,6 +4860,68 @@
     "details": {
       "provider": "Provider",
       "requestId": "Request ID"
+    }
+  },
+  "nimi": {
+    "transcriptionSpeakerOptionsUnsupported": "This transcription request was rejected. The task requests speaker intervals. Check the Nimi configuration and the audio format, language, vocabulary and other request options. Saved recordings can be reopened from the note’s Original file. Reason: {{reason}}",
+    "transcriptionTimingUnsupported": "This transcription request was rejected. The task requests timing information. Check the Nimi configuration and the audio format, language, vocabulary and other request options before retrying a saved recording. Reason: {{reason}}",
+    "meetingModelRequirements": "Meetings need real word timing. To distinguish speakers, choose a speech model that also supports speaker separation in Nimi. Model availability alone does not confirm support for these options.",
+    "sessionConnectionTitle": "Nimi connection unavailable",
+    "sessionConnectionUnavailable": "The App could not establish its Nimi connection. Check this App in Nimi, then retry. Reason: {{reason}}",
+    "sessionScopeChanged": "The account changed while preparing this task. Start a new task.",
+    "checkConnection": "Check connection",
+    "sessionRecordingRecovery": "If the recording was retained, open Home, use its More actions menu and choose Transcribe again.",
+    "pasteNotDelivered": "Text was not delivered",
+    "pasteRecovery": "Return to the original editor and try again, or paste the copied text manually.",
+    "pasteRecoveryCopyFailed": "Clipboard copying also failed. Use the text below to copy and paste the result.",
+    "startupUnavailable": "This development registration cannot start at login. Open this app from Nimi.",
+    "desktopNotReady": "Start Nimi Desktop, finish signing in, then try again.",
+    "modelsTitle": "Nimi models",
+    "modelsDescription": "Choose speech, text and embedding models in Nimi. Credentials stay with Nimi.",
+    "signInRequired": "Sign in to Nimi Desktop to configure and use AI. You can finish device and shortcut setup now.",
+    "openNimi": "Open Nimi",
+    "retry": "Try again",
+    "deferMicrophone": "Use notes now; enable the microphone later",
+    "microphoneRequired": "Recording needs microphone permission. Notes are available now.",
+    "microphoneSettings": "Microphone settings",
+    "speakerLabelsPending": "Speaker labels are still being connected to Nimi. Unlabelled transcription can be used separately.",
+    "originalSource": "Original file",
+    "searchSemantic": "semantic search",
+    "searchKeyword": "keyword search",
+    "searchScope": " in {{space}}",
+    "searchEmpty": "No notes found for \"{{query}}\"{{scope}} ({{method}})",
+    "searchResults": "Found {{count}} notes for \"{{query}}\"{{scope}} ({{method}})",
+    "searchUnavailable": "Search is unavailable. Try again.",
+    "previewUnavailableTitle": "Live preview stopped",
+    "previewUnavailableDescription": "Recording is continuing. When you stop, Nimi will try to transcribe the full recording.",
+    "speakerRepresentations": "Speaker representations",
+    "speakerMatchingIncomplete": "Some voices could not be matched. Original speaker intervals were saved. Review labels manually or check the speaker model in Nimi.",
+    "microphoneUnknown": "Microphone permission is unconfirmed. Check system settings; notes are available now.",
+    "restartTitle": "Restart app",
+    "restartDescription": "Nimi will reopen this app. Stop recording and finish processing first.",
+    "restartBusy": "Stop recording and finish processing before restarting the app.",
+    "businessAIManaged": "Your workspace AI restrictions cannot yet be verified for Nimi. AI is unavailable for this managed account; notes and non-AI work remain available.",
+    "updatesManaged": "App updates are managed in Nimi. This development registration has no installed-package update.",
+    "appDataTitle": "App data",
+    "appDataDescription": "Manage this app's settings, notes, history, recordings and search index.",
+    "appDataReset": "Delete this app's local settings, notes, history, recordings and search index. Nimi-managed models and credentials are kept.",
+    "updatesOpen": "Open Nimi app management",
+    "businessAIUnresolved": "Your workspace policy is unresolved. Try again after the business account is confirmed; notes remain available.",
+    "recordingMedia": {
+      "recording": "Recording {{number}}",
+      "mic": "Microphone",
+      "system": "System audio",
+      "seconds": "{{seconds}} s",
+      "status": {
+        "processing": "Processing",
+        "completed": "Completed",
+        "canceled": "Canceled",
+        "failed": "Failed",
+        "unknown": "Status unknown"
+      },
+      "openFailed": "Could not locate media",
+      "checkFile": "Check that the original file is still on this device.",
+      "unavailable": "No original media is available."
     }
   }
 }

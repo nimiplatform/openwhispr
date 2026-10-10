@@ -123,9 +123,7 @@ export function AssistantPanel({
     // Spoken commands answer on the Voice Assistant scope, not the Chat one.
     inferenceScope: "dictationAgent",
     allowConnectors: true,
-    onStreamComplete: (_assistantId, content, toolCalls) => {
-      void persistence.saveAssistantMessage(content, toolCalls);
-    },
+    onStreamComplete: (_assistantId, content, toolCalls, nimiTranscript) => persistence.saveAssistantMessage(content, toolCalls, nimiTranscript),
     onResponseContent,
   });
 

@@ -3,6 +3,38 @@ const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const SemanticSearchLifecycle = require("../../src/helpers/semanticSearchLifecycle");
 
+test("saved speech reaches semantic note material with the existing payload and cancellation signal", async () => {
+  const transcript = JSON.stringify([
+    { text: "只在录音中的新发言", source: "mic", id: "not-body" },
+  ]);
+  const note = {
+    title: "Title",
+    content: "Manual",
+    enhanced_content: null,
+    transcript,
+    space_id: 7,
+    folder_id: 8,
+  };
+  const signal = new AbortController().signal;
+  const owner = Object.create(SemanticSearchLifecycle.prototype);
+  owner.database = { getNoteForVectorIndex: () => note };
+  let projected;
+  owner.noteEmbedText = (...args) => {
+    projected = args;
+    return require("../../src/helpers/noteSearch").noteTranscriptText(args[3]);
+  };
+  let call;
+  owner.vectorIndex = {
+    upsertNote: async (...args) => {
+      call = args;
+      return true;
+    },
+  };
+  assert.equal(await owner._applyChange(9, signal), true);
+  assert.deepEqual(projected, ["Title", "Manual", null, transcript]);
+  assert.deepEqual(call, [9, "只在录音中的新发言", { space_id: 7, folder_id: 8 }, { signal }]);
+});
+
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 function deferred() {
@@ -46,6 +78,11 @@ function harness() {
     },
   });
   const index = {
+    isReady() {
+      return true;
+    },
+    assertCurrent() {},
+    async pruneNotes() {},
     init(port) {
       calls.push(["init", port]);
     },
@@ -73,11 +110,11 @@ function harness() {
     },
   };
   const embeddings = {
+    async embedText() {
+      return {};
+    },
     isAvailable() {
       return true;
-    },
-    async downloadModel() {
-      calls.push("download");
     },
     async unload() {
       calls.push("unload");
@@ -131,6 +168,8 @@ function harness() {
       timers.delete(id);
     },
   });
+  lifecycle.lastQuery = "actual query fixture";
+  lifecycle.indexPort = 6333;
   return {
     lifecycle,
     qdrant,
@@ -171,12 +210,14 @@ function gateStart(h) {
   return gate;
 }
 
-test("cold searches answer with keywords at once and share one background activation", async () => {
+test("cold semantic searches await one shared activation before answering", async () => {
   const h = harness();
   const gate = gateStart(h);
-  assert.equal(await h.lifecycle.search("first"), null);
-  assert.equal(await h.lifecycle.search("second"), null);
+  const first = h.lifecycle.search("first");
+  const second = h.lifecycle.search("second");
   gate.resolve();
+  assert.deepEqual(await first, [{ noteId: 1, score: 0.9 }]);
+  assert.deepEqual(await second, [{ noteId: 1, score: 0.9 }]);
   assert.equal(await h.lifecycle.warmUp(), true);
   assert.equal(h.calls.filter((call) => call === "start").length, 1);
   assert.deepEqual(await h.lifecycle.search("warm"), [{ noteId: 1, score: 0.9 }]);
@@ -210,17 +251,16 @@ test("an existing collection answers while activation drains; a new one waits fo
     h.pending.set(1, 1);
     const activation = h.lifecycle.warmUp();
     await started.promise;
-    assert.deepEqual(
-      await h.lifecycle.search("query"),
-      created ? null : [{ noteId: 1, score: 0.9 }]
-    );
+    const searching = h.lifecycle.search("query");
     gate.resolve(true);
+    assert.deepEqual(await searching, [{ noteId: 1, score: 0.9 }]);
     assert.equal(await activation, true);
   }
 });
 
 test("activation drains purges, live updates and deletions before readiness", async () => {
   const h = harness();
+  h.lifecycle.indexPort = null;
   h.pending.set(1, 1);
   h.pending.set(2, 2);
   h.pending.set(3, 3);
@@ -349,7 +389,7 @@ test("five minutes of idle releases resources and later search can wake them", a
   await timer.callback();
   assert.equal(h.lifecycle.isReady(), false);
   assert.ok(h.calls.includes("unload"));
-  assert.equal(await h.lifecycle.search("wake"), null);
+  assert.deepEqual(await h.lifecycle.search("wake"), [{ noteId: 1, score: 0.9 }]);
   assert.equal(await h.lifecycle.warmUp(), true);
   assert.deepEqual(await h.lifecycle.search("wake"), [{ noteId: 1, score: 0.9 }]);
 });
@@ -376,18 +416,18 @@ test("a search during idle shutdown waits for teardown before warming", async ()
     h.qdrant.ready = false;
   };
   const stopping = [...h.timers.values()][0].callback();
-  assert.equal(await h.lifecycle.search("wake"), null);
+  const searching = h.lifecycle.search("wake");
   gate.resolve();
   await stopping;
+  assert.deepEqual(await searching, [{ noteId: 1, score: 0.9 }]);
   assert.equal(await h.lifecycle.warmUp(), true);
   assert.equal(h.lifecycle.isReady(), true);
 });
 
-test("quit during model preparation prevents a late child spawn", async () => {
+test("quit while the embedding session is unavailable prevents a late child spawn", async () => {
   const h = harness();
   const gate = deferred();
   h.embeddings.isAvailable = () => false;
-  h.embeddings.downloadModel = () => gate.promise;
   const warming = h.lifecycle.warmUp();
   await Promise.resolve();
   const stopping = h.lifecycle.stop();
@@ -445,14 +485,11 @@ test("restart event recovers after the manager finishes its restarting critical 
   assert.ok(h.calls.some((call) => Array.isArray(call) && call[0] === "init" && call[1] === 6335));
 });
 
-test("failed model preparation releases resources and is retried without losing queued notes", async () => {
+test("an unavailable Nimi embedding session releases resources without losing queued notes", async () => {
   const h = harness();
   h.pending.set(1, 1);
   h.notes.set(1, { title: "Queued", content: "" });
   h.embeddings.isAvailable = () => false;
-  h.embeddings.downloadModel = async () => {
-    throw new Error("download failed");
-  };
   assert.equal(await h.lifecycle.warmUp(), false);
   assert.equal(h.pending.size, 1);
   assert.ok(h.calls.includes("unload"));
@@ -545,4 +582,40 @@ test("a change notification with a closed database logs instead of throwing", as
   assert.ok(
     h.logs.some(([level, , meta]) => level === "warn" && meta?.error === "database closed")
   );
+});
+
+test("conversation source edits from any database writer rebuild actual input chunks without relying on an IPC poke", async () => {
+  const h = harness();
+  const conversation = { id: 1, title: "Title", messages: [{ role: "user", content: "first" }] };
+  h.database.getAgentConversations = () => [{ id: 1 }, { id: 2 }];
+  h.database.getAgentConversation = (id) =>
+    id === 1 ? conversation : { id: 2, title: "Foreign note", note_id: 99, messages: [] };
+  const snapshots = [];
+  h.index.reindexAllConversations = async (values) => {
+    snapshots.push(JSON.parse(JSON.stringify(values)));
+  };
+  h.index.searchConversations = async () => [{ conversationId: 1, score: 0.9 }];
+  await h.lifecycle.searchConversations("query", 5);
+  await h.lifecycle.searchConversations("query", 5);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].length, 1);
+  conversation.messages[0].content = "changed by sync";
+  await h.lifecycle.searchConversations("query", 5);
+  assert.equal(snapshots.length, 2);
+  assert.equal(snapshots[1][0].messages[0].content, "changed by sync");
+});
+test("conversation cancellation and shutdown retire the in-flight embedding owner", async () => {
+  const h = harness();
+  h.database.getAgentConversations = () => [];
+  h.index.reindexAllConversations = async () => {};
+  const controller = new AbortController();
+  h.index.searchConversations = async (_query, _limit, { signal }) => {
+    assert.equal(signal, controller.signal);
+    controller.abort();
+    return [];
+  };
+  await assert.rejects(h.lifecycle.searchConversations("query", 5, { signal: controller.signal }), {
+    name: "AbortError",
+  });
+  assert.equal(h.lifecycle.isReady(), false);
 });

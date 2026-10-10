@@ -8,19 +8,15 @@ import { expandSnippets } from "../utils/snippets";
 import { getRecordingErrorTitle, getRecordingErrorDescription } from "../utils/recordingErrors";
 import { providerErrorActions } from "../utils/describeProviderError";
 import { isAccessibilitySkipped } from "../utils/permissions";
-import { needsSttConfigBeforeStart } from "../helpers/sttConfigPolicy";
+
 import {
   isAgentAllowed,
   isScreenContextAllowed,
-  isTranscriptionContextAllowed,
+  isNimiBusinessAIAllowed,
 } from "../stores/policyRules";
-import { isManagedTranscriptionActive } from "../services/managedTranscription";
 import { usePolicyStore } from "../stores/policyStore";
 import { getOnboardingDemoKind } from "../utils/onboardingDemo";
-import {
-  buildLiveTranscriptionPreview,
-  shouldShowByokStreamingPreview,
-} from "../utils/transcriptionPreview";
+import { buildLiveTranscriptionPreview } from "../utils/transcriptionPreview";
 import { canStartDictation } from "../utils/dictationReadiness";
 import { waitForVisualFrames } from "../utils/visualFrame";
 import { resolveLifecycleInputKind } from "../helpers/dictationRouting";
@@ -142,8 +138,7 @@ export const useAudioRecording = (toast, options = {}) => {
         if (!audioManagerRef.current) return false;
         const policyState = usePolicyStore.getState();
         if (
-          (!isManagedTranscriptionActive() &&
-            !isTranscriptionContextAllowed(policyState, getSettings(), "dictation")) ||
+          !isNimiBusinessAIAllowed(policyState) ||
           (voiceAgentRequested && !isAgentAllowed(policyState))
         ) {
           toast({ title: t("common.managedByOrg"), variant: "default" });
@@ -220,24 +215,8 @@ export const useAudioRecording = (toast, options = {}) => {
         // local STT or a signed-out session the fetch stalls on auth resolution
         // and would delay the mic open (#1673). A stale-but-present copy is
         // refreshed in the background and this recording keeps the old decision.
-        if (audioManagerRef.current.isSttConfigStale()) {
-          const hadConfig = Boolean(audioManagerRef.current.sttConfig);
-          const configFetch = (async () => {
-            const config = await window.electronAPI.getSttConfig?.();
-            if (config?.success) {
-              audioManagerRef.current.setSttConfig(config);
-            }
-          })().catch((error) => {
-            logger.warn("STT config fetch failed", { error: error?.message });
-          });
-          if (!hadConfig && needsSttConfigBeforeStart(getSettings())) {
-            await configFetch;
-          }
-        }
 
-        const didStart = audioManagerRef.current.shouldUseStreaming()
-          ? await audioManagerRef.current.startStreamingRecording()
-          : await audioManagerRef.current.startRecording();
+        const didStart = await audioManagerRef.current.startRecording();
         recordingStarted = didStart;
         if (didStart) {
           dictationErrorGenerationRef.current += 1;
@@ -251,10 +230,7 @@ export const useAudioRecording = (toast, options = {}) => {
           window.electronAPI?.unregisterCancelHotkey?.();
           // Cue semantics mirror performStopRecording: unconditional for
           // streaming, gated on the stop landing for batch.
-          if (audioManagerRef.current.getState().isStreaming) {
-            void playStopCue();
-            await audioManagerRef.current.stopStreamingRecording();
-          } else if (audioManagerRef.current.stopRecording()) {
+          if (audioManagerRef.current.stopRecording()) {
             void playStopCue();
           }
           return didStart;
@@ -317,11 +293,6 @@ export const useAudioRecording = (toast, options = {}) => {
       // Contract to the stable thinking state before MediaRecorder/streaming
       // finalization can occupy the renderer on slower Windows machines.
       await waitForVisualFrames();
-
-      if (currentState.isStreaming || currentState.isStreamingStartInProgress) {
-        void playStopCue();
-        return await audioManagerRef.current.stopStreamingRecording();
-      }
 
       const didStop = audioManagerRef.current.stopRecording();
 
@@ -448,7 +419,9 @@ export const useAudioRecording = (toast, options = {}) => {
         });
         return;
       }
-      const recoverableTranscript = getRecoverableTranscript(transcript);
+      // A completed model result takes precedence over an older live preview.
+      // Preserve its whitespace for the user's recovery action.
+      const recoverableTranscript = transcript.trim() ? transcript : getRecoverableTranscript();
       // A retried paste can wait on held keys with no visible progress, so a
       // second click is ignored until it settles, and a paste that lands after
       // a newer pill or recording leaves that one alone.
@@ -462,16 +435,28 @@ export const useAudioRecording = (toast, options = {}) => {
           retrying = false;
         }
       };
+      const connectionUnavailable =
+        code === "NIMI_SESSION_UNAVAILABLE" || code === "NIMI_SESSION_CHANGED";
       const actions = [
         {
-          label: t("common.retry"),
-          icon: "retry",
+          label: t(connectionUnavailable ? "nimi.checkConnection" : "common.retry"),
+          icon: connectionUnavailable ? "settings" : "retry",
           dismissOnClick: false,
-          onClick: onRetry ? retry : () => performStartRecording(lastStartOptionsRef.current),
+          onClick: connectionUnavailable
+            ? () => window.electronAPI?.openSettingsSection?.("speechToText")
+            : onRetry
+              ? retry
+              : () => performStartRecording(lastStartOptionsRef.current),
         },
       ];
 
-      actions.push(...providerErrorActions({ settingsTarget, technicalDetails }, t, isCurrent));
+      actions.push(
+        ...providerErrorActions(
+          { settingsTarget: connectionUnavailable ? undefined : settingsTarget, technicalDetails },
+          t,
+          isCurrent
+        )
+      );
 
       if (recoverableTranscript) {
         actions.push({
@@ -494,6 +479,13 @@ export const useAudioRecording = (toast, options = {}) => {
     };
 
     audioManagerRef.current.setCallbacks({
+      onPreviewUnavailable: () => {
+        toast({
+          title: t("nimi.previewUnavailableTitle"),
+          description: t("nimi.previewUnavailableDescription"),
+          variant: "default",
+        });
+      },
       onStateChange: ({ isRecording, isProcessing, isStreaming, micCaptureStatus }) => {
         reportLifecycle(isRecording ? "recording" : isProcessing ? "processing" : "idle");
         if (isRecording) {
@@ -544,6 +536,26 @@ export const useAudioRecording = (toast, options = {}) => {
         }
       },
       onError: (error) => {
+        // Cancel belongs to the ended action, even if its refusal arrives while
+        // a new capture is preparing. A standard toast preserves that action's
+        // facts without changing the current capture or its recovery card.
+        if (error?.audioCancellationFailed) {
+          toast({
+            title: getRecordingErrorTitle(error, t),
+            description: getRecordingErrorDescription(error, t),
+            variant: "destructive",
+            technicalDetails: {
+              exceptionType: error.reasonCode || error.code,
+              requestId: error.clientSubmissionId || error.details?.clientSubmissionId,
+              underlyingError: JSON.stringify({
+                message: error.description,
+                jobId: error.jobId || error.details?.jobId,
+                details: error.details,
+              }),
+            },
+          });
+          return;
+        }
         setIsPreparing(false);
         setIsStopping(false);
         if (error?.code === "TRANSCRIPTION_CANCELLED" || error?.code === "REASON_CANCELLED") return;
@@ -597,18 +609,8 @@ export const useAudioRecording = (toast, options = {}) => {
         onDemoEventRef.current?.({ kind: demoKindRef.current, status: "partial", text });
         setPartialTranscript(text);
         const settings = getSettings();
-        if (
-          audioManagerRef.current?.getStreamingProviderName?.() !== "tinfoil-realtime" &&
-          shouldShowByokStreamingPreview(
-            settings.showTranscriptionPreview,
-            settings.cloudTranscriptionMode,
-            !!audioManagerRef.current?.voiceAgentRequested
-          )
-        ) {
-          const previewText = buildLiveTranscriptionPreview(
-            audioManagerRef.current?.streamingFinalText,
-            text
-          );
+        if (settings.showTranscriptionPreview && !audioManagerRef.current?.voiceAgentRequested) {
+          const previewText = text;
           window.electronAPI
             ?.updateDictationPreview?.(previewText)
             .catch((error) =>
@@ -700,6 +702,9 @@ export const useAudioRecording = (toast, options = {}) => {
           const persistencePromise = audioManagerRef.current
             .saveTranscription(result.text, result.rawText ?? result.text, {
               clientTranscriptionId: result.clientTranscriptionId,
+              ...(result.transcription
+                ? { recognition: { transcript: result.transcription, chunks: result.chunks } }
+                : {}),
               // Spread rather than set: a result with no analytics timestamp
               // must not gain the key as undefined, matching how audioManager
               // carries this field and keeping the options object exactly what
@@ -795,7 +800,7 @@ export const useAudioRecording = (toast, options = {}) => {
               // Never promise a clipboard that rejected the write; the transcript
               // action on this pill is the recovery path either way.
               description: keptInClipboard ? description : descriptionClipboardFailed,
-              transcript: result.rawText ?? result.text,
+              transcript: result.text,
               onRetry,
             });
           };
@@ -818,6 +823,21 @@ export const useAudioRecording = (toast, options = {}) => {
                     "hooks.audioRecording.modifiersHeld.descriptionClipboardFailed"
                   ),
                   // The modifier wait runs again, so the kept text is safe to re-paste.
+                  onRetry: pasteTranscript,
+                },
+                generation
+              );
+            } else if (
+              !pasteOutcome.pasted &&
+              pasteOutcome.reason &&
+              pasteOutcome.reason !== "onboarding-demo"
+            ) {
+              await reportHeldBackPaste(
+                pasteOutcome.reason,
+                {
+                  title: t("nimi.pasteNotDelivered"),
+                  description: t("nimi.pasteRecovery"),
+                  descriptionClipboardFailed: t("nimi.pasteRecoveryCopyFailed"),
                   onRetry: pasteTranscript,
                 },
                 generation
@@ -924,10 +944,6 @@ export const useAudioRecording = (toast, options = {}) => {
             });
           }
 
-          if (audioManagerRef.current.shouldUseStreaming()) {
-            audioManagerRef.current.warmupStreamingConnection();
-          }
-
           await persistencePromise;
         }
       },
@@ -954,14 +970,6 @@ export const useAudioRecording = (toast, options = {}) => {
     // re-sync overlay content protection when it does.
     const unsubscribePolicy = usePolicyStore.subscribe(() => {
       window.electronAPI.setScreenContextEnabled?.(getSettings().voiceAgentScreenContext);
-    });
-    window.electronAPI.getSttConfig?.().then((config) => {
-      if (config?.success && audioManagerRef.current) {
-        audioManagerRef.current.setSttConfig(config);
-        if (audioManagerRef.current.shouldUseStreaming()) {
-          audioManagerRef.current.warmupStreamingConnection();
-        }
-      }
     });
 
     const handleToggle = async ({
@@ -1083,9 +1091,7 @@ export const useAudioRecording = (toast, options = {}) => {
       }
       // A streaming start in its mic-open phase is not yet `isStreaming`;
       // only the streaming cancel knows how to abandon it.
-      if (state.isStreaming || state.isStreamingStartInProgress) {
-        return await audioManagerRef.current.cancelStreamingRecording();
-      }
+
       return audioManagerRef.current.cancelRecording();
     }
     return false;

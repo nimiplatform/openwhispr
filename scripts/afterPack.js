@@ -4,24 +4,14 @@
 // final installer (DMG/NSIS/AppImage) is created. Operates only on the output
 // directory — never touches source node_modules/.
 //
-// 1. Strips non-target platform/arch binaries from onnxruntime-node
-//    (saves 150–180 MB per build).
-// 2. Wraps the Linux binary in a shell script that forces XWayland, reads
-//    user flags from ~/.config/open-whispr-flags.conf, and falls back to
-//    --no-sandbox where the Chromium sandbox cannot work (AppImage/tar.gz
-//    on distros that restrict unprivileged user namespaces).
-// 3. Fails the build if required binaries (ffmpeg-static, ps-list vendor exe,
-//    onnx worker script) are missing from app.asar.unpacked/.
+// Keeps media, capture and platform-wrapper payload checks. AI model execution
+// and ONNX inference belong to the supervised Nimi Runtime, outside this App.
 
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { Arch } = require("app-builder-lib");
+const { Arch } = require("electron-builder");
 const { buildLinuxWrapperScript } = require("./lib/linux-launcher");
-const {
-  WINDOWS_ONNXRUNTIME_PRIVATE_NAME,
-  WINDOWS_ONNXRUNTIME_UPSTREAM_NAME,
-} = require("./download-sherpa-onnx");
 
 // ---------------------------------------------------------------------------
 // macOS resource binary signing
@@ -139,64 +129,6 @@ function registerMacResourceBinariesForSigning(context) {
 }
 
 // ---------------------------------------------------------------------------
-// onnxruntime-node binary stripping
-// ---------------------------------------------------------------------------
-
-function stripOnnxruntimeBinaries(context) {
-  const platform = context.electronPlatformName; // darwin | linux | win32
-  const archName = Arch[context.arch]; // x64 | arm64 | ia32 | universal
-
-  // Resolve the resources directory inside the packed output
-  const resourcesDir = resolveResourcesDir(context);
-
-  const onnxBinDir = path.join(
-    resourcesDir,
-    "app.asar.unpacked",
-    "node_modules",
-    "onnxruntime-node",
-    "bin",
-    "napi-v6"
-  );
-
-  if (!fs.existsSync(onnxBinDir)) return;
-
-  // For universal macOS builds keep both arm64 and x64 under darwin/
-  const keepArchs = archName === "universal" ? ["arm64", "x64"] : [archName];
-
-  const platformDirs = fs.readdirSync(onnxBinDir);
-  let totalRemoved = 0;
-
-  for (const dir of platformDirs) {
-    const fullPath = path.join(onnxBinDir, dir);
-    if (!fs.statSync(fullPath).isDirectory()) continue;
-
-    if (dir !== platform) {
-      // Wrong platform — remove entirely
-      fs.rmSync(fullPath, { recursive: true, force: true });
-      totalRemoved++;
-      continue;
-    }
-
-    // Right platform — strip non-target architectures
-    const archDirs = fs.readdirSync(fullPath);
-    for (const arch of archDirs) {
-      const archPath = path.join(fullPath, arch);
-      if (!fs.statSync(archPath).isDirectory()) continue;
-      if (!keepArchs.includes(arch)) {
-        fs.rmSync(archPath, { recursive: true, force: true });
-        totalRemoved++;
-      }
-    }
-  }
-
-  if (totalRemoved > 0) {
-    console.log(
-      `  afterPack: stripped ${totalRemoved} non-target onnxruntime-node directories (keeping ${platform}/${keepArchs.join(",")})`
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Linux XWayland wrapper
 // ---------------------------------------------------------------------------
 
@@ -235,25 +167,6 @@ function verifyMeetingAecHelper(context) {
   }
 }
 
-// download-sherpa-onnx.js renames the bundled ONNX Runtime so the Windows
-// loader can never resolve it to C:\Windows\System32\onnxruntime.dll (#2054).
-// A stray onnxruntime.dll or a missing private DLL means that step was skipped
-// (stale cache, older marker) and Parakeet would die at startup for the user.
-function verifyWindowsOnnxRuntimePrivatized(binDir) {
-  const strayPath = path.join(binDir, WINDOWS_ONNXRUNTIME_UPSTREAM_NAME);
-  if (fs.existsSync(strayPath)) {
-    throw new Error(
-      `afterPack: ${WINDOWS_ONNXRUNTIME_UPSTREAM_NAME} must not ship (${strayPath}) — download-sherpa-onnx.js renames it to ${WINDOWS_ONNXRUNTIME_PRIVATE_NAME}; re-run the sherpa download with --force`
-    );
-  }
-  const privatePath = path.join(binDir, WINDOWS_ONNXRUNTIME_PRIVATE_NAME);
-  if (!fs.existsSync(privatePath)) {
-    throw new Error(
-      `afterPack: missing ${privatePath} — the bundled ONNX Runtime was not extracted and renamed; Parakeet would die at startup on Windows`
-    );
-  }
-}
-
 // compile:winkeys and download:windows-key-listener only warn when they can't
 // produce the key listener, so without this check a build ships where Hold and
 // modifier-only hotkeys (the default Control+Super) never fire (#2005).
@@ -261,7 +174,7 @@ function verifyWindowsKeyListener(binDir) {
   const listenerPath = path.join(binDir, "windows-key-listener.exe");
   if (!fs.existsSync(listenerPath)) {
     throw new Error(
-      `afterPack: missing ${listenerPath} — run npm run compile:winkeys on Windows (compiles with MSVC, MinGW or Clang, or downloads the prebuilt binary); Push-to-Talk and modifier-only hotkeys would never fire on Windows`
+      `afterPack: missing ${listenerPath} — run pnpm run compile:winkeys on Windows (compiles with MSVC, MinGW or Clang, or downloads the prebuilt binary); Push-to-Talk and modifier-only hotkeys would never fire on Windows`
     );
   }
 }
@@ -283,13 +196,6 @@ function verifyUnpackedBinaries(context) {
     );
   }
 
-  const onnxWorkerPath = path.join(unpackedDir, "src", "workers", "onnxWorker.js");
-  if (!fs.existsSync(onnxWorkerPath)) {
-    throw new Error(
-      `afterPack: missing ${onnxWorkerPath} — src/workers was not unpacked from app.asar (asarUnpack/packaging failure); the ONNX utility process would crash-loop in the packed app`
-    );
-  }
-
   // electron-builder strips *.exe from node_modules on non-Windows targets,
   // so the ps-list vendor executable only exists in Windows builds.
   if (isWindows) {
@@ -303,7 +209,6 @@ function verifyUnpackedBinaries(context) {
       );
     }
     const binDir = path.join(resolveResourcesDir(context), "bin");
-    verifyWindowsOnnxRuntimePrivatized(binDir);
     verifyWindowsKeyListener(binDir);
   }
 
@@ -315,12 +220,11 @@ function verifyUnpackedBinaries(context) {
 // ---------------------------------------------------------------------------
 
 exports.default = async function (context) {
-  stripOnnxruntimeBinaries(context);
   wrapLinuxBinary(context);
   verifyMeetingAecHelper(context);
   verifyUnpackedBinaries(context);
   registerMacResourceBinariesForSigning(context);
 };
 
-exports.verifyWindowsOnnxRuntimePrivatized = verifyWindowsOnnxRuntimePrivatized;
 exports.verifyWindowsKeyListener = verifyWindowsKeyListener;
+exports.verifyUnpackedBinaries = verifyUnpackedBinaries;

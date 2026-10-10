@@ -1,6 +1,5 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createRendererServer, installBrowserGlobals } = require("../lib/rendererTestHarness");
 
 const loadRegistry = () => import("../../src/services/tools/ToolRegistry.ts");
 const loadScope = () => import("../../src/components/chat/toolExecutionScope.ts");
@@ -87,6 +86,7 @@ test("a tool execution scope shares one signal and aborts it once", async () => 
 
   assert.equal(first.toolCallId, "call-a");
   assert.equal(first.signal, second.signal);
+  assert.equal(scope.signal, first.signal);
   assert.equal(first.signal.aborted, false);
   first.onApprovalRequested();
   second.onHoldDelivery({ preserveClipboard: true });
@@ -281,45 +281,6 @@ test("a scope without handlers ignores approval and delivery notices", async () 
   });
   assert.doesNotThrow(() => context.onApprovalRequested());
   assert.doesNotThrow(() => context.onHoldDelivery());
-});
-
-test("the cloud tool loop passes each call's id to executeToolCall", async (t) => {
-  installBrowserGlobals(t);
-  const vite = await createRendererServer(t, {
-    cachePrefix: "openwhispr-tool-context-cloud-test-",
-  });
-  const reasoningService = (await vite.ssrLoadModule("/services/ReasoningService.ts")).default;
-  t.after(() => reasoningService.destroy());
-
-  let step = 0;
-  t.mock.method(reasoningService, "streamFromIPC", () => {
-    step += 1;
-    const events =
-      step === 1
-        ? [{ type: "tool_call", id: "call-9", name: "record_context", arguments: "{}" }]
-        : [{ type: "content", text: "done" }];
-    return {
-      stream: (async function* () {
-        for (const event of events) yield event;
-      })(),
-      wasCancelled: () => false,
-    };
-  });
-
-  const received = [];
-  const stream = reasoningService.processTextStreamingCloud([{ role: "user", content: "hi" }], {
-    systemPrompt: "s",
-    tools: [{ name: "record_context", description: "d", parameters: {} }],
-    executeToolCall: async (name, _args, toolCallId) => {
-      received.push({ name, toolCallId });
-      return { data: "ok", displayText: "ok" };
-    },
-  });
-  for await (const _chunk of stream) {
-    // drain
-  }
-
-  assert.deepEqual(received, [{ name: "record_context", toolCallId: "call-9" }]);
 });
 
 test("toAISDKFormat hands the SDK's own abort signal to the context factory", async () => {

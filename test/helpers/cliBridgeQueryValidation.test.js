@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
+const { EventEmitter } = require("node:events");
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
@@ -39,8 +40,9 @@ function createBridge(dbMocks = {}) {
   return bridge;
 }
 
-class MockResponse {
+class MockResponse extends EventEmitter {
   constructor() {
+    super();
     this.statusCode = null;
     this.headers = {};
     this.body = "";
@@ -55,12 +57,12 @@ class MockResponse {
 }
 
 async function request(bridge, url) {
-  const req = {
+  const req = Object.assign(new EventEmitter(), {
     socket: { remoteAddress: "127.0.0.1" },
     headers: { authorization: "Bearer test-token" },
     method: "GET",
     url,
-  };
+  });
   const res = new MockResponse();
   await bridge._handleRequest(req, res);
   const parsed = res.body ? JSON.parse(res.body) : null;

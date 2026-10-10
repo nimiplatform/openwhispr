@@ -5,8 +5,6 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { getBaseLanguageCode } from "../../utils/languageSupport";
 import {
   transcribeFile,
-  getTranscriptionApiKey,
-  resolveFileTranscriptionRoute,
   type FileTranscriptionConfig,
 } from "../../services/fileTranscription";
 import { analyserRms } from "../../utils/audioLevel";
@@ -55,36 +53,8 @@ export function useVoiceDraft({ onTranscript, onError }: UseVoiceDraftOptions) {
   const chunksRef = useRef<Blob[]>([]);
   const discardRef = useRef(false);
 
-  const buildConfig = (): FileTranscriptionConfig => ({
-    useLocalWhisper,
-    localTranscriptionProvider: localTranscriptionProvider as string,
-    whisperModel,
-    parakeetModel,
-    cohereModel,
-    isOpenWhisprCloud: isSignedIn && cloudTranscriptionMode === "openwhispr" && !useLocalWhisper,
-    getApiKey: () => getTranscriptionApiKey(cloudTranscriptionProvider as string, settings),
-    cloudTranscriptionProvider: cloudTranscriptionProvider as string,
-    cloudTranscriptionBaseUrl: cloudTranscriptionBaseUrl || "",
-    cloudTranscriptionModel,
-    // Empty = auto-detect; the resolver supplies a default where one is required.
-    language: getBaseLanguageCode(preferredLanguage) || "",
-    cortiEnvironment,
-    cortiTenant,
-    transcriptionMode,
-    remoteTranscriptionUrl,
-    remoteTranscriptionModel,
-  });
-
-  // The chat mic always takes the batch file path, which a realtime-only
-  // provider cannot serve; the caller disables the mic rather than letting a
-  // take record straight into that failure.
-  const config = buildConfig();
-  const route =
-    config.isOpenWhisprCloud || config.useLocalWhisper
-      ? null
-      : resolveFileTranscriptionRoute(config);
-  const streamingOnlyProvider =
-    route?.transport === "error" && route.code === "STREAMING_ONLY_PROVIDER";
+  const buildConfig = (): FileTranscriptionConfig => ({ language: getBaseLanguageCode(preferredLanguage) || "" });
+  const streamingOnlyProvider = false;
 
   // Latest-value refs so the recorder's onstop (bound at start time) uses
   // current settings and callbacks.

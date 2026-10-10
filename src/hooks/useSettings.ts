@@ -250,45 +250,6 @@ function useSettingsInternal() {
     []
   );
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.electronAPI?.syncStartupPreferences) return;
-
-    const model =
-      localTranscriptionProvider === "nvidia"
-        ? parakeetModel
-        : localTranscriptionProvider === "cohere"
-          ? cohereModel
-          : whisperModel;
-    window.electronAPI
-      .syncStartupPreferences({
-        useLocalWhisper,
-        localTranscriptionProvider,
-        model: model || undefined,
-        language: preferredLanguage || undefined,
-        ...localServerPrefs,
-        keepLocalModelLoaded,
-        policySettled,
-      })
-      .catch((err) =>
-        logger.warn(
-          "Failed to sync startup preferences",
-          { error: (err as Error).message },
-          "settings"
-        )
-      );
-  }, [
-    useLocalWhisper,
-    localTranscriptionProvider,
-    whisperModel,
-    parakeetModel,
-    cohereModel,
-    preferredLanguage,
-    localServerPrefs,
-    keepLocalModelLoaded,
-    policySettled,
-    signOuts,
-  ]);
-
   return {
     useLocalWhisper: store.useLocalWhisper,
     whisperModel: store.whisperModel,

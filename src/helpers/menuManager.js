@@ -128,6 +128,7 @@ class MenuManager {
             },
             { type: "separator" },
             { role: "close", label: i18nMain.t("menu.closeWindow") },
+            { role: "quit", label: i18nMain.t("menu.quit"), accelerator: "Ctrl+Q" },
           ],
         },
         {

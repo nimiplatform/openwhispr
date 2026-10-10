@@ -1,0 +1,44 @@
+app_id: ai.nimi.openwhispr
+display_name: OpenWhispr
+version: 1.10.2
+profile: standalone
+npm_package_name: open-whispr
+cargo_package_name: open-whispr-shell
+tauri_identifier: ai.nimi.apps.ai.nimi.openwhispr
+package_author: OpenWhispr Team <support@openwhispr.com>
+submission_role: developer-submitted-input
+capability_contract_refs:
+  - audio.transcribe
+  - text.generate
+  - text.embed
+  - audio.speaker.embed
+required_standardized_feature_refs: []
+storage_policy:
+  kind: app-owned-os-storage
+  os_storage_disclosure:
+    - path_pattern: "%USERPROFILE%/.openwhispr-nimi/**"
+      purpose: OpenWhispr notes, recordings, history, settings and optional business service credentials
+      expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+    - path_pattern: ~/Library/Application Support/OpenWhispr-Nimi/**
+      purpose: macOS App-owned notes, recordings, history and settings
+      expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+    - path_pattern: ~/.config/OpenWhispr-Nimi/**
+      purpose: Linux App-owned notes, recordings, history and settings
+      expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+support_manifest:
+  diagnostics_bundle_fields:
+    - app_version
+    - runtime_status
+  redaction_rules:
+    - credentials
+  user_visible_issue_categories:
+    - startup
+    - runtime
+  escalation_path: README.md#support
+  kill_switch_visibility: visible
+  recovery_instructions: Restart the App from Nimi. If the problem persists, reinstall the current admitted release.
+review_inputs:
+  manifest: nimi.app.yaml
+  build_profile: .nimi/config/build-profile.yaml
+  scaffold_boundary: .nimi/contracts/scaffold-boundary.yaml
+admission_truth: platform-owned-after-review

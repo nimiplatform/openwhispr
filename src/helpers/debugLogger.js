@@ -1,3 +1,5 @@
+const { version: appVersion } = require("./appIdentity");
+const { getAppDataDirectory } = require("./appData");
 const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
@@ -60,7 +62,7 @@ class DebugLogger {
     }
 
     try {
-      const logsDir = path.join(app.getPath("userData"), "logs");
+      const logsDir = path.join(getAppDataDirectory(), "logs");
       if (!fs.existsSync(logsDir)) {
         fs.mkdirSync(logsDir, { recursive: true });
       }
@@ -74,12 +76,12 @@ class DebugLogger {
 
       this.debug("Debug logging enabled", { logFile: this.logFile });
       this.info("System Info", {
-        appVersion: app.getVersion(),
+        appVersion: appVersion,
         platform: process.platform,
         nodeVersion: process.version,
         electronVersion: process.versions.electron,
         appPath: app.getAppPath(),
-        userDataPath: app.getPath("userData"),
+        userDataPath: getAppDataDirectory(),
         resourcesPath: process.resourcesPath,
         environment: process.env.NODE_ENV,
       });

@@ -84,6 +84,17 @@ static BOOL GetExeName(HWND hwnd, char* exeName, DWORD exeNameSize) {
     return TRUE;
 }
 
+static BOOL GetTargetIdentity(HWND hwnd, DWORD* pid, ULONGLONG* started) {
+    if (!hwnd || !IsWindow(hwnd) || !GetWindowThreadProcessId(hwnd, pid) || !*pid) return FALSE;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, *pid);
+    if (!process) return FALSE;
+    FILETIME creation, exit, kernel, user;
+    BOOL ok = GetProcessTimes(process, &creation, &exit, &kernel, &user);
+    CloseHandle(process);
+    if (ok) *started = ((ULONGLONG)creation.dwHighDateTime << 32) | creation.dwLowDateTime;
+    return ok;
+}
+
 static BOOL IsTerminalExe(const char* exeName) {
     for (int i = 0; TERMINAL_EXES[i] != NULL; i++) {
         if (_stricmp(exeName, TERMINAL_EXES[i]) == 0) {
@@ -184,7 +195,8 @@ static BOOL RestoreForegroundWindow(HWND target) {
 
     BringWindowToTop(target);
     BOOL ok = SetForegroundWindow(target);
-    SetFocus(target);
+    /* Activation restores the application's own edit focus. Do not replace
+       its focused edit control with the top-level frame. */
 
     if (attachedFg) AttachThreadInput(thisThread, fgThread, FALSE);
     if (attachedTarget) AttachThreadInput(thisThread, targetThread, FALSE);
@@ -238,6 +250,9 @@ int main(int argc, char* argv[]) {
     BOOL copyMode = FALSE;
     BOOL capabilitiesOnly = FALSE;
     HWND restoreWindow = NULL;
+    DWORD expectedPid = 0;
+    ULONGLONG expectedStarted = 0;
+    BOOL targetSpecified = FALSE;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--detect-only") == 0) {
@@ -250,21 +265,42 @@ int main(int argc, char* argv[]) {
             /* Base 16: the handle comes back exactly as --detect-only printed
                it with "TARGET %p" (hex, with or without an 0x prefix). */
             restoreWindow = (HWND)(uintptr_t)strtoull(argv[++i], NULL, 16);
+            targetSpecified = TRUE;
+        } else if (strcmp(argv[i], "--target-pid") == 0 && i + 1 < argc) {
+            expectedPid = (DWORD)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--target-started") == 0 && i + 1 < argc) {
+            expectedStarted = strtoull(argv[++i], NULL, 10);
+        } else {
+            fprintf(stderr, "INVALID_ARGUMENT\n");
+            return 4;
         }
     }
 
     if (capabilitiesOnly) {
-        printf("paste-v1 selection-copy-v1 target-identity-v1 focus-restore-v1\n");
+        printf("paste-v1 selection-copy-v1 target-identity-v2 focus-restore-v2\n");
         return 0;
     }
 
-    /* Restore the captured target to the foreground before pasting. If it is
-       gone or can't be restored we fall through to whatever is foreground now,
-       which is the pre-#859 behavior. The settle sleep only applies when a
-       window switch actually happened — in the common case where the target
-       never lost the foreground, the paste goes out immediately. */
-    if (restoreWindow && GetForegroundWindow() != restoreWindow &&
-        RestoreForegroundWindow(restoreWindow)) {
+    if (!targetSpecified && !detectOnly && !copyMode) {
+        fprintf(stderr, "TARGET_UNAVAILABLE\n");
+        return 4;
+    }
+
+    /* A targeted delivery never falls through to an unrelated foreground.
+       Process creation time also rejects a recycled PID/window identity. */
+    if (targetSpecified) {
+        DWORD pid = 0;
+        ULONGLONG started = 0;
+        if (!expectedPid || !expectedStarted ||
+            !GetTargetIdentity(restoreWindow, &pid, &started) ||
+            pid != expectedPid || started != expectedStarted) {
+            fprintf(stderr, "TARGET_UNAVAILABLE\n");
+            return 4;
+        }
+        if (!RestoreForegroundWindow(restoreWindow)) {
+            fprintf(stderr, "TARGET_FOCUS_FAILED\n");
+            return 5;
+        }
         Sleep(20);
     }
 
@@ -291,7 +327,11 @@ int main(int argc, char* argv[]) {
     }
 
     if (detectOnly) {
+        DWORD pid = 0;
+        ULONGLONG started = 0;
+        if (!GetTargetIdentity(hwnd, &pid, &started)) return 4;
         printf("TARGET %p\n", (void*)hwnd);
+        printf("TARGET_PID %lu\nTARGET_STARTED %llu\n", pid, started);
         printf("WINDOW_CLASS %s\n", className);
         if (gotExeName) {
             printf("EXE_NAME %s\n", exeName);
@@ -303,12 +343,23 @@ int main(int argc, char* argv[]) {
 
     Sleep(10);
 
+    if (targetSpecified && GetForegroundWindow() != restoreWindow) {
+        fprintf(stderr, "TARGET_FOCUS_CHANGED\n");
+        return 5;
+    }
+
     /* Release any modifier keys held by the user's hotkey so they don't
        contaminate the paste keystroke (e.g. Ctrl+Win held → Ctrl+Win+V). */
     INPUT releasedInputs[NUM_MODIFIERS];
     WORD  releasedVKs[NUM_MODIFIERS];
     ZeroMemory(releasedInputs, sizeof(releasedInputs));
     int releasedCount = ReleaseModifiers(releasedInputs, releasedVKs);
+
+    if (targetSpecified && GetForegroundWindow() != restoreWindow) {
+        RestoreModifiers(releasedVKs, releasedCount);
+        fprintf(stderr, "TARGET_FOCUS_CHANGED\n");
+        return 5;
+    }
 
     int result;
     if (copyMode && isTerminal) {
@@ -334,7 +385,8 @@ int main(int argc, char* argv[]) {
         printf("COPY_OK %p %s %s\n", (void*)hwnd, className,
                isTerminal ? "ctrl+shift+c" : "ctrl+c");
     } else {
-        printf("PASTE_OK %s %s\n", className, isTerminal ? "ctrl+shift+v" : "ctrl+v");
+        printf("PASTE_SENT %p %lu %llu %s\n", (void*)hwnd,
+               expectedPid, expectedStarted, isTerminal ? "ctrl+shift+v" : "ctrl+v");
     }
     fflush(stdout);
 

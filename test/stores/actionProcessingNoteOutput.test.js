@@ -40,6 +40,7 @@ async function loadStore(t, storedNote = STORED_NOTE) {
   const vite = await createRendererServer(t, {
     cachePrefix: "openwhispr-action-output-test-",
     mockModules: {
+      "/services/nimiClient": `export const getNimiClient = () => ({ aiConfig: { get: async () => ({ effectiveSelections: [{ capabilityContract: "text.generate", state: "ready" }] }) } });`,
       "/services/ReasoningService": `
         export default {
           processText: async (text, model, agentName, config) => {
@@ -50,8 +51,9 @@ async function loadStore(t, storedNote = STORED_NOTE) {
         };
       `,
       "/utils/generateTitle": `
-        export const generateNoteTitle = async () => {
+        export const generateNoteTitle = async (_text, _unused, config) => {
           globalThis.__titleRequests += 1;
+          if (globalThis.__titleStep) return globalThis.__titleStep(config);
           return globalThis.__generatedTitle;
         };
       `,
@@ -65,6 +67,7 @@ async function loadStore(t, storedNote = STORED_NOTE) {
     delete globalThis.__processTextError;
     delete globalThis.__generatedTitle;
     delete globalThis.__titleRequests;
+    delete globalThis.__titleStep;
     delete globalThis.__updateNoteFails;
   });
 
@@ -101,6 +104,30 @@ test("note formatting asks for enough output tokens to hold a long meeting summa
     calls[0].config.maxTokens >= 4096,
     `expected a real output budget, got ${calls[0].config.maxTokens}`
   );
+});
+
+test("cancel during automatic title aborts the title request and cannot write the summary late", async (t) => {
+  const { store, updates } = await loadStore(t);
+  let finishTitle, titleSignal;
+  globalThis.__titleStep = (config) =>
+    new Promise((resolve) => {
+      titleSignal = config.signal;
+      finishTitle = resolve;
+    });
+  store.runBackgroundAction(
+    77,
+    "Declared note material",
+    "hash",
+    { ...ACTION, kind: "template" },
+    { allowTitleGeneration: true },
+    LABELS
+  );
+  await waitFor(() => finishTitle, "title stage");
+  store.cancelAction(77);
+  assert.equal(titleSignal.aborted, true);
+  finishTitle("Late title");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(updates.length, 0);
 });
 
 test("a truncated summary is still saved rather than discarded", async (t) => {
@@ -141,7 +168,7 @@ test("a blank result is reported as an error and never saved as the enhanced not
   assert.equal(updates.length, 0);
 });
 
-test("note formatting requests carry the noteFormatting scope, which is what buys them the long deadline", async (t) => {
+test("note formatting requests retain their business scope", async (t) => {
   // The scope is the only thing that tells the providers this request may run
   // for minutes. If the overrides stop being spread into the config, the note
   // silently drops back to the 30-second dictation deadline (1.10.1).

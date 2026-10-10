@@ -25,10 +25,16 @@ const START_ARGS = {
 function createElectronAPI({ stopResult = async () => ({ success: true }) } = {}) {
   const noopListener = () => () => {};
   const listeners = {};
+  let activeSessionId;
   const capture = (name) => (callback) => {
-    listeners[name] = callback;
+    const boundSessionId = activeSessionId;
+    const registered =
+      name === "segment"
+        ? (event) => callback({ ...event, sessionId: event.sessionId ?? boundSessionId })
+        : callback;
+    listeners[name] = registered;
     return () => {
-      if (listeners[name] === callback) listeners[name] = null;
+      if (listeners[name] === registered) listeners[name] = null;
     };
   };
   const writes = [];
@@ -39,11 +45,14 @@ function createElectronAPI({ stopResult = async () => ({ success: true }) } = {}
       mode: "native",
       strategy: "native",
     }),
-    meetingTranscriptionStart: async () => ({
-      success: true,
-      systemAudioMode: "native",
-      systemAudioStrategy: "native",
-    }),
+    meetingTranscriptionStart: async (options) => {
+      activeSessionId = options.sessionId;
+      return {
+        success: true,
+        systemAudioMode: "native",
+        systemAudioStrategy: "native",
+      };
+    },
     meetingTranscriptionSetSystemAudioAvailable: async () => ({ success: true }),
     meetingTranscriptionStop: () => stopResult(),
     meetingTranscriptionSend: () => {},
@@ -85,6 +94,11 @@ async function loadStore(t, api) {
     },
   });
   const vite = await createRendererServer(t, {
+    // Session readiness is tested separately; these fixtures isolate capture.
+    mockModules: {
+      "/services/nimiClient":
+        "export async function prepareNimiAIWork(signal) { signal?.throwIfAborted(); await globalThis.__meetingStartReadiness?.(signal); signal?.throwIfAborted(); }",
+    },
     cachePrefix: "openwhispr-meeting-unload-flush-test-",
   });
   const store = await vite.ssrLoadModule("/stores/meetingRecordingStore.ts");
@@ -122,6 +136,7 @@ test("a reload mid-recording writes the live transcript as the page unloads", as
   const { store, unload } = await loadStore(t, api);
   assert.equal(await store.startRecording(START_ARGS), true);
   listeners.segment(final("said after the last save"));
+  listeners.segment({ ...final("wrong session must be rejected"), sessionId: "wrong-session" });
   writes.length = 0;
 
   const { event, results } = unload();
@@ -131,15 +146,16 @@ test("a reload mid-recording writes the live transcript as the page unloads", as
   assert.equal(flushed.length, 1, "the live transcript is written as the window unloads");
   assert.equal(flushed[0][0], NOTE_ID);
   assert.match(flushed[0][1].transcript, /said after the last save/);
+  assert.doesNotMatch(flushed[0][1].transcript, /wrong session/);
   // A cancelled unload fails main's loadURL and prompts on a reload.
   assert.equal(event.defaultPrevented, false);
   assert.equal(event.returnValue, "");
   assert.ok(results.every((result) => result === undefined));
 
-  // Same serialization the stop path writes, so diarization merges either one.
+  // Main owns the terminal result; Stop must not rewrite it from this snapshot.
   writes.length = 0;
   await store.stopRecording();
-  assert.equal(transcriptWrites(writes).at(-1)[1].transcript, flushed[0][1].transcript);
+  assert.equal(transcriptWrites(writes).length, 0);
 });
 
 test("the unload listener is registered once, at module load", async (t) => {
@@ -174,7 +190,7 @@ test("an unload with nothing to save writes nothing", async (t) => {
   await store.stopRecording();
 });
 
-test("an unload during a stop neither duplicates nor overwrites its final write", async (t) => {
+test("an unload during a stop does not overwrite Main's final write", async (t) => {
   let releaseStop;
   const stopGate = new Promise((resolve) => {
     releaseStop = resolve;
@@ -187,10 +203,10 @@ test("an unload during a stop neither duplicates nor overwrites its final write"
 
   const stopping = store.stopRecording();
   await settle();
-  assert.equal(transcriptWrites(writes).length, 1, "the stop wrote its final transcript");
+  assert.equal(transcriptWrites(writes).length, 0, "Main owns the stop result");
 
   unload();
-  assert.equal(transcriptWrites(writes).length, 1, "the flush stays out of a stop");
+  assert.equal(transcriptWrites(writes).length, 0, "the flush stays out of a stop");
 
   releaseStop({ success: true });
   await stopping;
@@ -251,9 +267,7 @@ test("a recording note restored after a denied delete is saved again", async (t)
 test("a resumed recording's unload keeps the transcript it resumed from", async (t) => {
   const { api, listeners, writes } = createElectronAPI();
   const { store, unload } = await loadStore(t, api);
-  const seedSegments = [
-    { id: "seed-1", text: "from the first half", source: "mic", timestamp: 1 },
-  ];
+  const seedSegments = [{ id: "seed-1", text: "from the first half", source: "mic", timestamp: 1 }];
   assert.equal(await store.startRecording({ ...START_ARGS, seedSegments }), true);
   listeners.segment(final("from the second half"));
   writes.length = 0;

@@ -53,7 +53,9 @@ export function useCreateNote() {
       revealContainer(result.note.space_id, result.note.folder_id);
       setActiveNoteId(result.note.id);
       // A new note is a recording waiting to happen: start it unless one is already live.
-      if (recordingAllowed && !isRecording) void startRecordingForNote(result.note);
+      if (recordingAllowed && !isRecording && localStorage.getItem("micPermissionGranted") === "true") {
+        void startRecordingForNote(result.note);
+      }
     },
     [t, recordingAllowed, isRecording]
   );

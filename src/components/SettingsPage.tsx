@@ -1,7 +1,11 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import { openDesktopIntent } from "@nimiplatform/kit/shell/renderer/bridge";
+import { createNimiDesktopOpenRequestId } from "@nimiplatform/kit/core/desktop-open";
+import NimiAISettings from "./settings/NimiAISettings";
+import React, { useState, useCallback, useEffect, useRef, useContext } from "react";
+import { SettingsTabActiveContext } from "./ui/settingsTabActivity";
 import { useTranslation } from "react-i18next";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
+
 import { BIDI_VALUE_TOKEN, BidiInterpolatedText } from "./ui/BidiInterpolatedText";
 import { Badge } from "./ui/badge";
 import {
@@ -9,17 +13,11 @@ import {
   Download,
   Mic,
   Shield,
-  FolderOpen,
   LogOut,
   UserCircle,
   Sun,
   Moon,
   Monitor,
-  Cloud,
-  Key,
-  Cpu,
-  Network,
-  ShieldCheck,
   Sparkles,
   AlertTriangle,
   Loader2,
@@ -49,8 +47,7 @@ import MicrophoneSettings from "./ui/MicrophoneSettings";
 import PermissionCard from "./ui/PermissionCard";
 import PasteToolsInfo from "./ui/PasteToolsInfo";
 import NixOsPasteInfo from "./ui/NixOsPasteInfo";
-import TranscriptionModelPicker from "./TranscriptionModelPicker";
-import SelfHostedPanel from "./SelfHostedPanel";
+
 import {
   ConfirmDialog,
   AlertDialog,
@@ -66,7 +63,7 @@ import { useSettings } from "../hooks/useSettings";
 import { useDialogs } from "../hooks/useDialogs";
 import { useInsightsSyncOptIn } from "../hooks/useInsightsSyncOptIn";
 import { useLeaderboardParticipation } from "../hooks/useLeaderboardParticipation";
-import { useWhisper } from "../hooks/useWhisper";
+
 import { usePermissions } from "../hooks/usePermissions";
 import { useSystemAudioPermission } from "../hooks/useSystemAudioPermission";
 import { useClipboard } from "../hooks/useClipboard";
@@ -79,7 +76,7 @@ import { useHotkeyRegistration } from "../hooks/useHotkeyRegistration";
 import { useHotkeyModeInfo } from "../hooks/useHotkeyModeInfo";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { validateHotkeyForSlot } from "../utils/hotkeyValidation";
-import { getPlatform, getCachedPlatform } from "../utils/platform";
+import { getCachedPlatform } from "../utils/platform";
 import { formatHotkeyLabel } from "../utils/hotkeys";
 import {
   getLinuxPasteInstallCommands,
@@ -93,9 +90,9 @@ import DeveloperSection from "./DeveloperSection";
 import ChatAgentSettings from "./settings/ChatAgentSettings";
 import DictationAgentSettings from "./settings/DictationAgentSettings";
 import DictationTranslationSettings from "./settings/DictationTranslationSettings";
-import InferenceConfigEditor from "./settings/InferenceConfigEditor";
+
 import { MeetingTranscriptionPanel } from "./settings/MeetingSettings";
-import { UploadTranscriptionPanel } from "./settings/UploadSettings";
+
 import LanguageSelector from "./ui/LanguageSelector";
 import { Skeleton } from "./ui/skeleton";
 import { Progress } from "./ui/progress";
@@ -103,13 +100,12 @@ import { useToast } from "./ui/useToast";
 import { useTheme } from "../hooks/useTheme";
 import type {
   ChineseScriptPreference,
-  GpuDevice,
   LocalTranscriptionProvider,
   InferenceMode,
 } from "../types/electron";
 import logger from "../utils/logger";
-import { SettingsRow, InferenceModeSelector } from "./ui/SettingsSection";
-import type { InferenceModeOption } from "./ui/SettingsSection";
+import { SettingsRow } from "./ui/SettingsSection";
+
 import { useSettingsLayout } from "./ui/useSettingsLayout";
 import { useUsage } from "../hooks/useUsage";
 import { cn } from "./lib/utils";
@@ -123,13 +119,7 @@ import {
 } from "../stores/noteStore.js";
 import { syncService } from "../services/SyncService.js";
 import { formatBytes } from "../utils/formatBytes";
-import {
-  clearMissingLocalModelSelections,
-  TRANSCRIPTION_ENTERPRISE_POLICY_PROVIDER_IDS,
-  TRANSCRIPTION_POLICY_PROVIDER_IDS,
-  useSettingsStore,
-  type HotkeyRegistrationResult,
-} from "../stores/settingsStore";
+import { useSettingsStore, type HotkeyRegistrationResult } from "../stores/settingsStore";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 import { highestPlan } from "../lib/usageStore";
 import { decideProPlanCardCta } from "../lib/upsell";
@@ -139,11 +129,10 @@ import {
   effectiveLocalHistoryEnabled,
   isAgentAllowed,
   isCloudBackupAllowed,
-  isEnterpriseTranscriptionOfferable,
   lockedLocalHistoryValue,
   maxAudioRetentionDays,
 } from "../stores/policyRules";
-import { usePolicyModeOptions, usePolicySnapshot } from "../hooks/usePolicy";
+import { usePolicySnapshot } from "../hooks/usePolicy";
 import { usePolicyStore } from "../stores/policyStore";
 import { stopRecording } from "../stores/meetingRecordingStore";
 import { requestSignIn } from "../utils/requestSignIn";
@@ -155,9 +144,6 @@ import EnterpriseCheckoutDialog from "./settings/EnterpriseCheckoutDialog";
 import CreateWorkspaceDialog from "./CreateWorkspaceDialog";
 import ProfileSection from "./settings/ProfileSection";
 import { formatAmount } from "../utils/formatAmount";
-import { enterpriseProviderName, getTranscriptionProvider } from "../models/ModelRegistry";
-import { useManagedScopeResolution } from "../stores/enterpriseIdentityStore";
-import { supportsLiveTranscriptionPreview } from "../utils/transcriptionPreview";
 
 export type SettingsSectionType =
   | "account"
@@ -522,307 +508,6 @@ interface TranscriptionSectionProps {
   }) => void;
 }
 
-function TranscriptionSection({
-  isSignedIn,
-  cloudTranscriptionMode,
-  setCloudTranscriptionMode,
-  useLocalWhisper,
-  setUseLocalWhisper,
-  updateTranscriptionSettings,
-  cloudTranscriptionProvider,
-  setCloudTranscriptionProvider,
-  cloudTranscriptionModel,
-  setCloudTranscriptionModel,
-  localTranscriptionProvider,
-  setLocalTranscriptionProvider,
-  whisperModel,
-  setWhisperModel,
-  parakeetModel,
-  setParakeetModel,
-  cohereModel,
-  setCohereModel,
-  cloudTranscriptionBaseUrl,
-  setCloudTranscriptionBaseUrl,
-  transcriptionMode,
-  setTranscriptionMode,
-  remoteTranscriptionUrl,
-  setRemoteTranscriptionUrl,
-  remoteTranscriptionModel,
-  setRemoteTranscriptionModel,
-  showTranscriptionPreview,
-  setShowTranscriptionPreview,
-  toast,
-}: TranscriptionSectionProps) {
-  const { t } = useTranslation();
-  const policySnapshot = usePolicySnapshot();
-  const enterpriseTranscriptionSetupMode = useSettingsStore(
-    (s) => s.enterpriseTranscriptionSetupMode
-  );
-  const setEnterpriseTranscriptionSetupMode = useSettingsStore(
-    (s) => s.setEnterpriseTranscriptionSetupMode
-  );
-  const managed = useManagedScopeResolution("transcription", enterpriseTranscriptionSetupMode);
-  const managedAvailable = useManagedScopeResolution("transcription", "managed");
-  const {
-    modes: transcriptionModes,
-    effectiveMode: effectiveTranscriptionMode,
-    isModeAllowed,
-  } = usePolicyModeOptions<InferenceModeOption>(
-    [
-      {
-        id: "openwhispr",
-        label: t("settingsPage.transcription.modes.openwhispr"),
-        description: t("settingsPage.transcription.modes.openwhisprDesc"),
-        icon: <Cloud className="w-4 h-4" />,
-        disabled: !isSignedIn,
-        badge: !isSignedIn ? t("common.freeAccountRequired") : undefined,
-      },
-      {
-        id: "providers",
-        label: t("settingsPage.transcription.modes.providers"),
-        description: t("settingsPage.transcription.modes.providersDesc"),
-        icon: <Key className="w-4 h-4" />,
-      },
-      {
-        id: "local",
-        label: t("settingsPage.transcription.modes.local"),
-        description: t("settingsPage.transcription.modes.localDesc"),
-        icon: <Cpu className="w-4 h-4" />,
-      },
-      {
-        id: "self-hosted",
-        label: t("settingsPage.transcription.modes.selfHosted"),
-        description: t("settingsPage.transcription.modes.selfHostedDesc"),
-        icon: <Network className="w-4 h-4" />,
-      },
-      ...(isEnterpriseTranscriptionOfferable(policySnapshot)
-        ? [
-            {
-              id: "enterprise" as const,
-              label: t("settingsPage.transcription.modes.enterprise"),
-              description: t("settingsPage.transcription.modes.enterpriseDesc"),
-              icon: <ShieldCheck className="w-4 h-4" />,
-            },
-          ]
-        : []),
-    ],
-    "transcription",
-    transcriptionMode,
-    {
-      byokProviders: TRANSCRIPTION_POLICY_PROVIDER_IDS,
-      enterpriseProviders: TRANSCRIPTION_ENTERPRISE_POLICY_PROVIDER_IDS,
-    }
-  );
-  const handleTranscriptionModeSelect = (mode: InferenceMode) => {
-    if (!isModeAllowed(mode)) return;
-    if (mode === "openwhispr" && !isSignedIn) {
-      requestSignIn();
-      return;
-    }
-    if (mode === effectiveTranscriptionMode) return;
-    setTranscriptionMode(mode);
-    setUseLocalWhisper(mode === "local");
-    updateTranscriptionSettings({ useLocalWhisper: mode === "local" });
-    setCloudTranscriptionMode(mode === "openwhispr" ? "openwhispr" : "byok");
-    if (mode === "enterprise") setEnterpriseTranscriptionSetupMode("managed");
-
-    const toastKey = {
-      openwhispr: "switchedCloud",
-      providers: "switchedProviders",
-      local: "switchedLocal",
-      "self-hosted": "switchedSelfHosted",
-      enterprise: "switchedEnterprise",
-    }[mode];
-    toast({
-      title: t(`settingsPage.transcription.toasts.${toastKey}.title`),
-      description: t(`settingsPage.transcription.toasts.${toastKey}.description`),
-      variant: "success",
-      duration: 3000,
-    });
-  };
-
-  const handleLocalModelSelect = useCallback(
-    (modelId: string, providerId?: string) => {
-      const provider = providerId ?? localTranscriptionProvider;
-      if (provider === "nvidia") {
-        setParakeetModel(modelId);
-      } else if (provider === "cohere") {
-        setCohereModel(modelId);
-      } else {
-        setWhisperModel(modelId);
-      }
-    },
-    [localTranscriptionProvider, setParakeetModel, setCohereModel, setWhisperModel]
-  );
-
-  const selectedCloudModelStreams = Boolean(
-    getTranscriptionProvider(cloudTranscriptionProvider)?.models.some(
-      (model) => model.id === cloudTranscriptionModel && model.streaming
-    )
-  );
-  const previewAvailable = supportsLiveTranscriptionPreview(
-    effectiveTranscriptionMode,
-    selectedCloudModelStreams
-  );
-
-  const renderPreviewToggle = () => (
-    <SettingsPanel>
-      <SettingsPanelRow>
-        <SettingsRow
-          label={t("settingsPage.transcription.transcriptionPreview")}
-          description={t("settingsPage.transcription.transcriptionPreviewDescription")}
-        >
-          <Toggle checked={showTranscriptionPreview} onChange={setShowTranscriptionPreview} />
-        </SettingsRow>
-      </SettingsPanelRow>
-    </SettingsPanel>
-  );
-
-  const renderTranscriptionPicker = (mode?: "cloud" | "local") => (
-    <TranscriptionModelPicker
-      selectedCloudProvider={cloudTranscriptionProvider}
-      onCloudProviderSelect={setCloudTranscriptionProvider}
-      selectedCloudModel={cloudTranscriptionModel}
-      onCloudModelSelect={setCloudTranscriptionModel}
-      selectedLocalModel={
-        localTranscriptionProvider === "nvidia"
-          ? parakeetModel
-          : localTranscriptionProvider === "cohere"
-            ? cohereModel
-            : whisperModel
-      }
-      onLocalModelSelect={handleLocalModelSelect}
-      selectedLocalProvider={localTranscriptionProvider}
-      onLocalProviderSelect={setLocalTranscriptionProvider}
-      useLocalWhisper={mode === "local" || (!mode && useLocalWhisper)}
-      onModeChange={
-        mode
-          ? noop
-          : (isLocal) => {
-              setUseLocalWhisper(isLocal);
-              updateTranscriptionSettings({ useLocalWhisper: isLocal });
-              if (isLocal) setCloudTranscriptionMode("byok");
-            }
-      }
-      mode={mode}
-      cloudTranscriptionBaseUrl={cloudTranscriptionBaseUrl}
-      setCloudTranscriptionBaseUrl={setCloudTranscriptionBaseUrl}
-      variant="settings"
-    />
-  );
-
-  // Local decoding still serves meetings and uploads under a managed-config
-  // error, so this stays a card alongside the rest of the section (including
-  // the GPU selector below) instead of an early return that hides it.
-  const errorCard =
-    managed.kind === "error" ? (
-      <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3" role="alert">
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-          <div>
-            <p className="text-sm font-medium">
-              {t("settingsPage.aiModels.managedEnterprise.errorTitle")}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {managed.messageKey ? t(managed.messageKey) : managed.message}
-            </p>
-          </div>
-        </div>
-      </div>
-    ) : null;
-
-  const managedCard =
-    managed.kind === "managed" ? (
-      <div className="space-y-3 rounded-lg border border-primary/20 bg-primary/[0.03] p-3">
-        <div className="flex items-start gap-2.5">
-          <div className="rounded-md bg-primary/10 p-1.5 text-primary">
-            <ShieldCheck className="h-4 w-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">
-              {t("settingsPage.aiModels.managedEnterprise.title")}
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {enterpriseProviderName(managed.provider)} ·{" "}
-              <span className="font-mono">{managed.model}</span>
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {t("settingsPage.aiModels.managedEnterprise.description")}
-            </p>
-          </div>
-        </div>
-        {managed.mode !== "managed_required" && managed.allowManualSetup && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => setEnterpriseTranscriptionSetupMode("manual")}
-            >
-              {t("settingsPage.aiModels.managedEnterprise.usePersonalSetup")}
-            </Button>
-          </div>
-        )}
-      </div>
-    ) : null;
-
-  return (
-    <div className="space-y-4">
-      {errorCard}
-      {managedCard}
-      {!errorCard && !managedCard && (
-        <>
-          {enterpriseTranscriptionSetupMode === "manual" && managedAvailable.kind === "managed" && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 p-3">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">
-                  {t("settingsPage.aiModels.managedEnterprise.availableTitle")}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {t("settingsPage.aiModels.managedEnterprise.availableDescription", {
-                    provider: enterpriseProviderName(managedAvailable.provider),
-                  })}
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                onClick={() => setEnterpriseTranscriptionSetupMode("managed")}
-              >
-                {t("settingsPage.aiModels.managedEnterprise.useManaged")}
-              </Button>
-            </div>
-          )}
-          <InferenceModeSelector
-            modes={transcriptionModes}
-            activeMode={effectiveTranscriptionMode}
-            onSelect={handleTranscriptionModeSelect}
-          />
-
-          {effectiveTranscriptionMode === "providers" && renderTranscriptionPicker("cloud")}
-          {effectiveTranscriptionMode === "local" && renderTranscriptionPicker("local")}
-          {previewAvailable && renderPreviewToggle()}
-
-          {effectiveTranscriptionMode === "self-hosted" && (
-            <SelfHostedPanel
-              service="transcription"
-              url={remoteTranscriptionUrl}
-              onUrlChange={setRemoteTranscriptionUrl}
-              model={remoteTranscriptionModel}
-              onModelChange={setRemoteTranscriptionModel}
-            />
-          )}
-        </>
-      )}
-
-      {/* Local decoding still serves meetings and uploads, so the GPU choice stays reachable. */}
-      <GpuDeviceSelector purpose="transcription" />
-    </div>
-  );
-}
-
 interface AiModelsSectionProps {
   useCleanupModel: boolean;
   setUseCleanupModel: (value: boolean) => void;
@@ -859,43 +544,7 @@ function NoteFormattingSettings() {
           </SettingsRow>
         </SettingsPanelRow>
       </SettingsPanel>
-      <InferenceConfigEditor scope="noteFormatting" />
-    </div>
-  );
-}
-
-function AiModelsSection({ useCleanupModel, setUseCleanupModel, toast }: AiModelsSectionProps) {
-  const { t } = useTranslation();
-
-  const handleCleanupModeChange = (mode: InferenceMode) => {
-    const toastKey = CLEANUP_MODE_TOAST_KEY[mode];
-    toast({
-      title: t(`settingsPage.aiModels.toasts.${toastKey}.title`),
-      description: t(`settingsPage.aiModels.toasts.${toastKey}.description`),
-      variant: "success",
-      duration: 3000,
-    });
-  };
-
-  return (
-    <div className="space-y-4">
-      <SettingsPanel>
-        <SettingsPanelRow>
-          <SettingsRow
-            label={t("settingsPage.aiModels.enableTextCleanup")}
-            description={t("settingsPage.aiModels.enableTextCleanupDescription")}
-          >
-            <Toggle checked={useCleanupModel} onChange={setUseCleanupModel} />
-          </SettingsRow>
-        </SettingsPanelRow>
-      </SettingsPanel>
-
-      {useCleanupModel && (
-        <>
-          <InferenceConfigEditor scope="dictationCleanup" onModeChange={handleCleanupModeChange} />
-          <GpuDeviceSelector purpose="intelligence" />
-        </>
-      )}
+      <NimiAISettings initialCapability="text.generate" />
     </div>
   );
 }
@@ -951,7 +600,12 @@ function VADLabelWithInfo({ label, description }: { label: string; description: 
 }
 
 function TabPanel({ active, children }: { active: boolean; children: React.ReactNode }) {
-  return <div className={active ? undefined : "hidden"}>{children}</div>;
+  const parentActive = useContext(SettingsTabActiveContext);
+  return (
+    <SettingsTabActiveContext.Provider value={active && parentActive}>
+      <div className={active ? undefined : "hidden"}>{children}</div>
+    </SettingsTabActiveContext.Provider>
+  );
 }
 
 // "Gabriel Stein" → "GS"; single names fall back to their first letter.
@@ -1096,70 +750,6 @@ function LlmsTabs({
       {agentAllowed && (
         <TabPanel active={tab === "chatIntelligence"}>{renderChatIntelligence()}</TabPanel>
       )}
-    </div>
-  );
-}
-
-function GpuDeviceSelector({ purpose }: { purpose: "transcription" | "intelligence" }) {
-  const { t } = useTranslation();
-  const [gpus, setGpus] = useState<GpuDevice[]>([]);
-  const [selectedUuid, setSelectedUuid] = useState("");
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    Promise.all([
-      window.electronAPI?.listGpus?.() ?? Promise.resolve([]),
-      window.electronAPI?.getGpuDeviceIndex?.(purpose) ?? Promise.resolve(""),
-    ])
-      .then(([gpuList, savedUuid]) => {
-        setGpus(gpuList);
-        setSelectedUuid(savedUuid || gpuList[0]?.uuid || "");
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
-  }, [purpose]);
-
-  if (!loaded || gpus.length < 2) return null;
-
-  return (
-    <div className="border-t border-border/70 pt-4 mt-4">
-      <SectionHeader
-        title={t(`settingsPage.${purpose}.gpuDevice.title`)}
-        description={t(`settingsPage.${purpose}.gpuDevice.description`)}
-      />
-      <SettingsPanel>
-        <SettingsPanelRow>
-          <div className="relative w-full">
-            <select
-              value={selectedUuid}
-              onChange={async (e) => {
-                const uuid = e.target.value;
-                setSelectedUuid(uuid);
-                await window.electronAPI?.setGpuDeviceIndex?.(purpose, uuid);
-              }}
-              className="w-full appearance-none rounded-md border border-border bg-background px-3 pe-10 py-2 text-sm"
-            >
-              {gpus.map((gpu) => (
-                <option key={gpu.uuid} value={gpu.uuid}>
-                  GPU {gpu.index}: {gpu.name} ({Math.round(gpu.vramMb / 1024)}GB)
-                </option>
-              ))}
-            </select>
-            <svg
-              className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground"
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-          </div>
-        </SettingsPanelRow>
-      </SettingsPanel>
     </div>
   );
 }
@@ -1321,34 +911,11 @@ export default function SettingsPage({
       ? "%USERPROFILE%\\.cache\\openwhispr"
       : "~/.cache/openwhispr"
   );
-  useEffect(() => {
-    window.electronAPI
-      ?.getModelCacheRoot?.()
-      .then((root) => {
-        if (root) setCachePathHint(root);
-      })
-      .catch(() => {});
-  }, []);
 
-  const {
-    status: updateStatus,
-    info: updateInfo,
-    downloadProgress: updateDownloadProgress,
-    isChecking: checkingForUpdates,
-    isDownloading: downloadingUpdate,
-    isInstalling: installInitiated,
-    checkForUpdates,
-    downloadUpdate,
-    installUpdate: installUpdateAction,
-    getAppVersion,
-  } = useUpdater();
-
-  const isUpdateAvailable =
-    !updateStatus.isDevelopment && (updateStatus.updateAvailable || updateStatus.updateDownloaded);
+  const { getAppVersion } = useUpdater();
 
   const migration = useMigration();
 
-  const { checkWhisperInstallation } = useWhisper();
   const permissionsHook = usePermissions(showAlertDialog);
   const systemAudio = useSystemAudioPermission();
   useClipboard(showAlertDialog);
@@ -1589,25 +1156,6 @@ export default function SettingsPage({
 
   const platform = getCachedPlatform();
 
-  const [autoStartEnabled, setAutoStartEnabled] = useState(false);
-  const [autoStartNeedsApproval, setAutoStartNeedsApproval] = useState(false);
-  const [autoStartLoading, setAutoStartLoading] = useState(true);
-
-  const readAutoStartState = useCallback(async () => {
-    if (!window.electronAPI?.getAutoStartEnabled) return;
-    try {
-      const state = await window.electronAPI.getAutoStartEnabled();
-      setAutoStartEnabled(state.enabled);
-      setAutoStartNeedsApproval(state.requiresApproval);
-    } catch (error) {
-      logger.error("Failed to get auto-start status", error, "settings");
-    }
-  }, []);
-
-  useEffect(() => {
-    readAutoStartState().finally(() => setAutoStartLoading(false));
-  }, [readAutoStartState]);
-
   useEffect(() => {
     window.electronAPI?.syncNotificationPreferences?.({
       notificationsEnabled,
@@ -1621,21 +1169,6 @@ export default function SettingsPage({
     notifyCalendarReminders,
     meetingProcessDetection,
   ]);
-
-  const handleAutoStartChange = async (enabled: boolean) => {
-    if (!window.electronAPI?.setAutoStartEnabled) return;
-    try {
-      setAutoStartLoading(true);
-      const result = await window.electronAPI.setAutoStartEnabled(enabled);
-      // Read the state back rather than assuming: on Windows the OS can have the
-      // item disabled out from under us, and on macOS it can need approval first.
-      if (result.success) await readAutoStartState();
-    } catch (error) {
-      logger.error("Failed to set auto-start", error, "settings");
-    } finally {
-      setAutoStartLoading(false);
-    }
-  };
 
   const [noteFilesDefaultPath, setNoteFilesDefaultPath] = useState("");
   const [noteFilesRebuilding, setNoteFilesRebuilding] = useState(false);
@@ -1686,17 +1219,13 @@ export default function SettingsPage({
 
       const version = await getAppVersion();
       if (version && mounted) setCurrentVersion(version);
-
-      if (mounted) {
-        checkWhisperInstallation();
-      }
     }, 100);
 
     return () => {
       mounted = false;
       clearTimeout(timer);
     };
-  }, [checkWhisperInstallation, getAppVersion]);
+  }, [getAppVersion]);
 
   useEffect(() => {
     const loadEffectiveDefaultHotkey = async () => {
@@ -1724,30 +1253,6 @@ export default function SettingsPage({
     return () => cleanup?.();
   }, [toast, t, setActivationMode]);
 
-  useEffect(() => {
-    if (installInitiated) {
-      if (installTimeoutRef.current) {
-        clearTimeout(installTimeoutRef.current);
-      }
-      installTimeoutRef.current = setTimeout(() => {
-        showAlertDialog({
-          title: t("settingsPage.general.updates.dialogs.almostThere.title"),
-          description: t("settingsPage.general.updates.dialogs.almostThere.description"),
-        });
-      }, 10000);
-    } else if (installTimeoutRef.current) {
-      clearTimeout(installTimeoutRef.current);
-      installTimeoutRef.current = null;
-    }
-
-    return () => {
-      if (installTimeoutRef.current) {
-        clearTimeout(installTimeoutRef.current);
-        installTimeoutRef.current = null;
-      }
-    };
-  }, [installInitiated, showAlertDialog, t]);
-
   const resetAccessibilityPermissions = () => {
     const message = t("settingsPage.permissions.resetAccessibility.description");
 
@@ -1759,54 +1264,6 @@ export default function SettingsPage({
       },
     });
   };
-
-  const handleRemoveModels = useCallback(() => {
-    if (isRemovingModels) return;
-
-    showConfirmDialog({
-      title: t("settingsPage.developer.removeModels.title"),
-      description: t("settingsPage.developer.removeModels.description", { path: cachePathHint }),
-      confirmText: t("settingsPage.developer.removeModels.confirmText"),
-      variant: "destructive",
-      onConfirm: async () => {
-        setIsRemovingModels(true);
-        try {
-          const results = await Promise.allSettled([
-            window.electronAPI?.deleteAllWhisperModels?.(),
-            window.electronAPI?.deleteAllParakeetModels?.(),
-            window.electronAPI?.modelDeleteAll?.(),
-          ]);
-
-          const anyFailed = results.some(
-            (r) =>
-              r.status === "rejected" || (r.status === "fulfilled" && r.value && !r.value.success)
-          );
-
-          if (anyFailed) {
-            showAlertDialog({
-              title: t("settingsPage.developer.removeModels.failedTitle"),
-              description: t("settingsPage.developer.removeModels.failedDescription"),
-            });
-          } else {
-            // Every local model is gone, so no local selection can still resolve.
-            clearMissingLocalModelSelections(() => false);
-            window.dispatchEvent(new Event("openwhispr-models-cleared"));
-            showAlertDialog({
-              title: t("settingsPage.developer.removeModels.successTitle"),
-              description: t("settingsPage.developer.removeModels.successDescription"),
-            });
-          }
-        } catch {
-          showAlertDialog({
-            title: t("settingsPage.developer.removeModels.failedTitle"),
-            description: t("settingsPage.developer.removeModels.failedDescriptionShort"),
-          });
-        } finally {
-          setIsRemovingModels(false);
-        }
-      },
-    });
-  }, [isRemovingModels, cachePathHint, showConfirmDialog, showAlertDialog, t]);
 
   const { isSignedIn, isLoaded, user, refetch } = useAuth();
   const {
@@ -2053,135 +1510,6 @@ export default function SettingsPage({
       setIsDeletingAccount(false);
     }
   }, [eraseDeviceData, showAlertDialog, t, user?.id]);
-
-  const renderWhisperVadSettings = () => (
-    <div>
-      <SectionHeader
-        title={t("settingsPage.transcription.vad.title")}
-        description={t("settingsPage.transcription.vad.description")}
-      />
-      <SettingsPanel>
-        <SettingsPanelRow>
-          <SettingsRow
-            label={t("settingsPage.transcription.vad.toggles.dictation.title")}
-            description={t("settingsPage.transcription.vad.toggles.dictation.description")}
-          >
-            <Toggle checked={dictationSileroEnabled} onChange={setDictationSileroEnabled} />
-          </SettingsRow>
-        </SettingsPanelRow>
-        <SettingsPanelRow>
-          <SettingsRow
-            label={t("settingsPage.transcription.vad.toggles.noteRecording.title")}
-            description={t("settingsPage.transcription.vad.toggles.noteRecording.description")}
-          >
-            <Toggle checked={noteRecordingSileroEnabled} onChange={setNoteRecordingSileroEnabled} />
-          </SettingsRow>
-        </SettingsPanelRow>
-        <SettingsPanelRow>
-          <SettingsRow
-            label={t("settingsPage.transcription.vad.toggles.meeting.title")}
-            description={t("settingsPage.transcription.vad.toggles.meeting.description")}
-          >
-            <Toggle checked={meetingSileroEnabled} onChange={setMeetingSileroEnabled} />
-          </SettingsRow>
-        </SettingsPanelRow>
-        <SettingsPanelRow>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full">
-            <div className="space-y-1.5">
-              <VADLabelWithInfo
-                label={t("settingsPage.transcription.vad.fields.threshold.label")}
-                description={t("settingsPage.transcription.vad.fields.threshold.info")}
-              />
-              <Input
-                dir="ltr"
-                type="number"
-                step="0.01"
-                min="0.1"
-                max="0.95"
-                value={whisperVadThreshold}
-                onChange={(e) => setWhisperVadThreshold(Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <VADLabelWithInfo
-                label={t("settingsPage.transcription.vad.fields.minSpeechDurationMs.label")}
-                description={t("settingsPage.transcription.vad.fields.minSpeechDurationMs.info")}
-              />
-              <Input
-                dir="ltr"
-                type="number"
-                step="10"
-                min="50"
-                max="2000"
-                value={whisperVadMinSpeechDurationMs}
-                onChange={(e) => setWhisperVadMinSpeechDurationMs(Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <VADLabelWithInfo
-                label={t("settingsPage.transcription.vad.fields.minSilenceDurationMs.label")}
-                description={t("settingsPage.transcription.vad.fields.minSilenceDurationMs.info")}
-              />
-              <Input
-                dir="ltr"
-                type="number"
-                step="10"
-                min="50"
-                max="2000"
-                value={whisperVadMinSilenceDurationMs}
-                onChange={(e) => setWhisperVadMinSilenceDurationMs(Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <VADLabelWithInfo
-                label={t("settingsPage.transcription.vad.fields.maxSpeechDurationS.label")}
-                description={t("settingsPage.transcription.vad.fields.maxSpeechDurationS.info")}
-              />
-              <Input
-                dir="ltr"
-                type="number"
-                step="1"
-                min="5"
-                max="120"
-                value={whisperVadMaxSpeechDurationS}
-                onChange={(e) => setWhisperVadMaxSpeechDurationS(Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <VADLabelWithInfo
-                label={t("settingsPage.transcription.vad.fields.speechPadMs.label")}
-                description={t("settingsPage.transcription.vad.fields.speechPadMs.info")}
-              />
-              <Input
-                dir="ltr"
-                type="number"
-                step="10"
-                min="0"
-                max="1000"
-                value={whisperVadSpeechPadMs}
-                onChange={(e) => setWhisperVadSpeechPadMs(Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <VADLabelWithInfo
-                label={t("settingsPage.transcription.vad.fields.samplesOverlap.label")}
-                description={t("settingsPage.transcription.vad.fields.samplesOverlap.info")}
-              />
-              <Input
-                dir="ltr"
-                type="number"
-                step="0.01"
-                min="0"
-                max="0.95"
-                value={whisperVadSamplesOverlap}
-                onChange={(e) => setWhisperVadSamplesOverlap(Number(e.target.value))}
-              />
-            </div>
-          </div>
-        </SettingsPanelRow>
-      </SettingsPanel>
-    </div>
-  );
 
   const renderSectionContent = () => {
     switch (activeSection) {
@@ -3383,38 +2711,11 @@ export default function SettingsPage({
                 <SettingsPanelRow>
                   <SettingsRow
                     label={t("settingsPage.general.startup.launchAtLogin")}
-                    description={t("settingsPage.general.startup.launchAtLoginDescription")}
+                    description={t("nimi.startupUnavailable")}
                   >
-                    <Toggle
-                      checked={autoStartEnabled}
-                      onChange={(checked: boolean) => handleAutoStartChange(checked)}
-                      disabled={autoStartLoading}
-                    />
+                    {null}
                   </SettingsRow>
                 </SettingsPanelRow>
-                {autoStartNeedsApproval && (
-                  <SettingsPanelRow>
-                    <Alert
-                      variant="warning"
-                      className="dark:bg-amber-950/50 dark:border-amber-800 dark:text-amber-200 dark:[&>svg]:text-amber-400"
-                    >
-                      <AlertTriangle className="h-4 w-4" />
-                      <AlertTitle>
-                        {t("settingsPage.general.startup.needsApproval.title")}
-                      </AlertTitle>
-                      <AlertDescription className="space-y-2">
-                        <p>{t("settingsPage.general.startup.needsApproval.description")}</p>
-                        <Button
-                          onClick={() => void window.electronAPI?.openLoginItemsSettings?.()}
-                          variant="outline"
-                          size="sm"
-                        >
-                          {t("settingsPage.general.startup.needsApproval.action")}
-                        </Button>
-                      </AlertDescription>
-                    </Alert>
-                  </SettingsPanelRow>
-                )}
                 <SettingsPanelRow>
                   <SettingsRow
                     label={t("settingsPage.general.startup.startMinimized")}
@@ -4566,6 +3867,31 @@ EOF`,
       case "system":
         return (
           <div className="space-y-6">
+            <SettingsPanel>
+              <SettingsPanelRow>
+                <SettingsRow
+                  label={t("nimi.restartTitle")}
+                  description={t("nimi.restartDescription")}
+                >
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await window.electronAPI.relaunchApp();
+                      } catch (error) {
+                        showAlertDialog({
+                          title: t("nimi.restartTitle"),
+                          description: error instanceof Error ? error.message : String(error),
+                        });
+                      }
+                    }}
+                  >
+                    {t("nimi.restartTitle")}
+                  </Button>
+                </SettingsRow>
+              </SettingsPanelRow>
+            </SettingsPanel>
             {/* Software Updates */}
             <div>
               <SectionHeader title={t("settingsPage.general.updates.title")} />
@@ -4573,199 +3899,34 @@ EOF`,
                 <SettingsPanelRow>
                   <SettingsRow
                     label={t("settingsPage.general.updates.currentVersion")}
-                    description={
-                      updateStatus.isDevelopment
-                        ? t("settingsPage.general.updates.devMode")
-                        : !updateStatus.isSupported
-                          ? t("settingsPage.general.updates.managedByPackageManager")
-                          : isUpdateAvailable
-                            ? t("settingsPage.general.updates.newVersionAvailable")
-                            : t("settingsPage.general.updates.latestVersion")
-                    }
+                    description={t("nimi.updatesManaged")}
                   >
-                    <div className="flex items-center gap-2.5">
-                      <span
-                        dir="ltr"
-                        className="text-xs tabular-nums text-muted-foreground font-mono"
-                      >
-                        {currentVersion || t("settingsPage.general.updates.versionPlaceholder")}
-                      </span>
-                      {updateStatus.isDevelopment ? (
-                        <Badge variant="warning">
-                          {t("settingsPage.general.updates.badges.dev")}
-                        </Badge>
-                      ) : isUpdateAvailable ? (
-                        <Badge variant="success">
-                          {t("settingsPage.general.updates.badges.update")}
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline">
-                          {t("settingsPage.general.updates.badges.latest")}
-                        </Badge>
-                      )}
-                    </div>
-                  </SettingsRow>
-                </SettingsPanelRow>
-
-                {updateStatus.isSupported && (
-                  <SettingsPanelRow>
-                    <SettingsRow
-                      label={t("settingsPage.general.updates.automaticUpdates")}
-                      description={t("settingsPage.general.updates.automaticUpdatesDescription")}
-                    >
-                      <Toggle checked={autoUpdatesEnabled} onChange={setAutoUpdatesEnabled} />
-                    </SettingsRow>
-                  </SettingsPanelRow>
-                )}
-
-                <SettingsPanelRow>
-                  <div className="space-y-2.5">
+                    <span dir="ltr">{currentVersion}</span>
                     <Button
+                      variant="outline"
+                      size="sm"
                       onClick={async () => {
                         try {
-                          const result = await checkForUpdates();
-                          if (result && !result.updateAvailable) {
-                            toast({
-                              title: t("settingsPage.general.updates.dialogs.noUpdates.title"),
-                              description: t(
-                                "settingsPage.general.updates.dialogs.noUpdates.description"
-                              ),
+                          const result = await openDesktopIntent({
+                            requestId: createNimiDesktopOpenRequestId(),
+                            intent: { kind: "open-apps", appId: "ai.nimi.openwhispr" },
+                          });
+                          if (result.status === "rejected")
+                            showAlertDialog({
+                              title: t("nimi.updatesOpen"),
+                              description: `${t(result.reasonCode === "desktop-open-desktop-not-ready" ? "nimi.desktopNotReady" : "nimi.updatesManaged")} (${result.reasonCode})`,
                             });
-                          }
-                        } catch {
+                        } catch (error) {
                           showAlertDialog({
-                            title: t("settingsPage.general.updates.dialogs.checkFailed.title"),
-                            description: t(
-                              "settingsPage.general.updates.dialogs.checkFailed.description"
-                            ),
+                            title: t("nimi.updatesOpen"),
+                            description: error instanceof Error ? error.message : String(error),
                           });
                         }
                       }}
-                      disabled={
-                        checkingForUpdates ||
-                        updateStatus.isDevelopment ||
-                        !updateStatus.isSupported
-                      }
-                      variant="outline"
-                      className="w-full"
-                      size="sm"
                     >
-                      <RefreshCw
-                        size={13}
-                        className={`me-1.5 ${checkingForUpdates ? "animate-spin" : ""}`}
-                      />
-                      {checkingForUpdates
-                        ? t("settingsPage.general.updates.checking")
-                        : t("settingsPage.general.updates.checkForUpdates")}
+                      {t("nimi.updatesOpen")}
                     </Button>
-
-                    {isUpdateAvailable && !updateStatus.updateDownloaded && (
-                      <div className="space-y-2">
-                        <Button
-                          onClick={async () => {
-                            try {
-                              await downloadUpdate();
-                            } catch {
-                              showAlertDialog({
-                                title: t(
-                                  "settingsPage.general.updates.dialogs.downloadFailed.title"
-                                ),
-                                description: t(
-                                  "settingsPage.general.updates.dialogs.downloadFailed.description"
-                                ),
-                              });
-                            }
-                          }}
-                          disabled={downloadingUpdate}
-                          variant="success"
-                          className="w-full"
-                          size="sm"
-                        >
-                          <Download
-                            size={13}
-                            className={`me-1.5 ${downloadingUpdate ? "animate-pulse" : ""}`}
-                          />
-                          {downloadingUpdate
-                            ? t("settingsPage.general.updates.downloading", {
-                                progress: Math.round(updateDownloadProgress),
-                              })
-                            : t("settingsPage.general.updates.downloadUpdate", {
-                                version: updateInfo?.version || "",
-                              })}
-                        </Button>
-
-                        {downloadingUpdate && (
-                          <div className="h-1 w-full overflow-hidden rounded-full bg-muted/50">
-                            <div
-                              className="h-full bg-success transition-[width] duration-200 rounded-full"
-                              style={{
-                                width: `${Math.min(100, Math.max(0, updateDownloadProgress))}%`,
-                              }}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {updateStatus.updateDownloaded && (
-                      <Button
-                        onClick={() => {
-                          showConfirmDialog({
-                            title: t("settingsPage.general.updates.dialogs.installUpdate.title"),
-                            description: t(
-                              "settingsPage.general.updates.dialogs.installUpdate.description",
-                              { version: updateInfo?.version || "" }
-                            ),
-                            confirmText: t(
-                              "settingsPage.general.updates.dialogs.installUpdate.confirmText"
-                            ),
-                            onConfirm: async () => {
-                              try {
-                                await installUpdateAction();
-                              } catch {
-                                showAlertDialog({
-                                  title: t(
-                                    "settingsPage.general.updates.dialogs.installFailed.title"
-                                  ),
-                                  description: t(
-                                    "settingsPage.general.updates.dialogs.installFailed.description"
-                                  ),
-                                });
-                              }
-                            },
-                          });
-                        }}
-                        disabled={installInitiated}
-                        className="w-full"
-                        size="sm"
-                      >
-                        <RefreshCw
-                          size={14}
-                          className={`me-2 ${installInitiated ? "animate-spin" : ""}`}
-                        />
-                        {installInitiated
-                          ? t("settingsPage.general.updates.restarting")
-                          : t("settingsPage.general.updates.installAndRestart")}
-                      </Button>
-                    )}
-                  </div>
-
-                  {updateInfo?.releaseNotes && (
-                    <div className="mt-4 pt-4 border-t border-border/70">
-                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-                        <BidiInterpolatedText
-                          text={t("settingsPage.general.updates.whatsNew", {
-                            version: BIDI_VALUE_TOKEN,
-                          })}
-                          value={updateInfo.version}
-                        />
-                      </p>
-                      <div
-                        className="text-xs text-muted-foreground [&_ul]:list-disc [&_ul]:ps-4 [&_ul]:space-y-1 [&_ol]:list-decimal [&_ol]:ps-4 [&_ol]:space-y-1 [&_li]:ps-1 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_a]:text-link [&_a]:underline"
-                        dangerouslySetInnerHTML={{ __html: updateInfo.releaseNotes }}
-                      />
-                    </div>
-                  )}
+                  </SettingsRow>
                 </SettingsPanelRow>
               </SettingsPanel>
             </div>
@@ -4778,50 +3939,16 @@ EOF`,
             {/* Data Management */}
             <div className="border-t border-border/70 pt-6">
               <SectionHeader
-                title={t("settingsPage.developer.dataManagementTitle")}
-                description={t("settingsPage.developer.dataManagementDescription")}
+                title={t("nimi.appDataTitle")}
+                description={t("nimi.appDataDescription")}
               />
 
               <div className="space-y-4">
                 <SettingsPanel>
                   <SettingsPanelRow>
                     <SettingsRow
-                      label={t("settingsPage.developer.modelCache")}
-                      description={
-                        <span dir="ltr" className="block break-all">
-                          {cachePathHint}
-                        </span>
-                      }
-                    >
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => window.electronAPI?.openWhisperModelsFolder?.()}
-                        >
-                          <FolderOpen className="me-1.5 h-3.5 w-3.5" />
-                          {t("settingsPage.developer.open")}
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={handleRemoveModels}
-                          disabled={isRemovingModels}
-                        >
-                          {isRemovingModels
-                            ? t("settingsPage.developer.removing")
-                            : t("settingsPage.developer.clearCache")}
-                        </Button>
-                      </div>
-                    </SettingsRow>
-                  </SettingsPanelRow>
-                </SettingsPanel>
-
-                <SettingsPanel>
-                  <SettingsPanelRow>
-                    <SettingsRow
                       label={t("settingsPage.developer.resetAppData")}
-                      description={t("settingsPage.developer.resetAppDataDescription")}
+                      description={t("nimi.appDataReset")}
                     >
                       <Button
                         onClick={() => {
@@ -4942,59 +4069,27 @@ EOF`,
                 : undefined
             }
             renderDictation={() => (
-              <div className="space-y-6">
-                <TranscriptionSection
-                  isSignedIn={isSignedIn ?? false}
-                  cloudTranscriptionMode={cloudTranscriptionMode}
-                  setCloudTranscriptionMode={setCloudTranscriptionMode}
-                  useLocalWhisper={useLocalWhisper}
-                  setUseLocalWhisper={setUseLocalWhisper}
-                  updateTranscriptionSettings={updateTranscriptionSettings}
-                  cloudTranscriptionProvider={cloudTranscriptionProvider}
-                  setCloudTranscriptionProvider={setCloudTranscriptionProvider}
-                  cloudTranscriptionModel={cloudTranscriptionModel}
-                  setCloudTranscriptionModel={setCloudTranscriptionModel}
-                  localTranscriptionProvider={localTranscriptionProvider}
-                  setLocalTranscriptionProvider={setLocalTranscriptionProvider}
-                  whisperModel={whisperModel}
-                  setWhisperModel={setWhisperModel}
-                  parakeetModel={parakeetModel}
-                  setParakeetModel={setParakeetModel}
-                  cohereModel={cohereModel}
-                  setCohereModel={setCohereModel}
-                  cloudTranscriptionBaseUrl={cloudTranscriptionBaseUrl}
-                  setCloudTranscriptionBaseUrl={setCloudTranscriptionBaseUrl}
-                  transcriptionMode={transcriptionMode}
-                  setTranscriptionMode={setTranscriptionMode}
-                  remoteTranscriptionUrl={remoteTranscriptionUrl}
-                  setRemoteTranscriptionUrl={setRemoteTranscriptionUrl}
-                  remoteTranscriptionModel={remoteTranscriptionModel}
-                  setRemoteTranscriptionModel={setRemoteTranscriptionModel}
-                  showTranscriptionPreview={showTranscriptionPreview}
-                  setShowTranscriptionPreview={setShowTranscriptionPreview}
-                  toast={toast}
-                />
-                {transcriptionMode === "local" &&
-                  localTranscriptionProvider === "whisper" &&
-                  renderWhisperVadSettings()}
+              <div className="space-y-4">
+                <NimiAISettings initialCapability="audio.transcribe" />
+                <SettingsRow
+                  label={t("settingsPage.transcription.transcriptionPreview")}
+                  description={t("settingsPage.transcription.transcriptionPreviewDescription")}
+                >
+                  <Toggle
+                    checked={showTranscriptionPreview}
+                    onChange={(value) =>
+                      updateTranscriptionSettings({ showTranscriptionPreview: value })
+                    }
+                  />
+                </SettingsRow>
               </div>
             )}
-            renderNoteRecording={() => (
-              <div className="space-y-6">
-                <MeetingTranscriptionPanel />
-                {transcriptionMode === "local" &&
-                  localTranscriptionProvider === "whisper" &&
-                  renderWhisperVadSettings()}
-              </div>
-            )}
-            renderUpload={() => (
-              <div className="space-y-6">
-                <UploadTranscriptionPanel />
-              </div>
-            )}
+            renderNoteRecording={() => <MeetingTranscriptionPanel />}
+            renderUpload={() => <NimiAISettings initialCapability="audio.transcribe" />}
           />
         </TabPanel>
       )}
+
       {hasMountedLlms && (
         <TabPanel active={activeSection === "llms"}>
           <LlmsTabs
@@ -5004,13 +4099,13 @@ EOF`,
             renderChatIntelligence={() => <ChatAgentSettings />}
             renderDictationCleanup={() => (
               <div className="space-y-6">
-                <AiModelsSection
-                  useCleanupModel={useCleanupModel}
-                  setUseCleanupModel={(value) => {
-                    updateCleanupSettings({ useCleanupModel: value });
-                  }}
-                  toast={toast}
-                />
+                <>
+                  <Toggle
+                    checked={useCleanupModel}
+                    onChange={(value) => updateCleanupSettings({ useCleanupModel: value })}
+                  />
+                  <NimiAISettings initialCapability="text.generate" />
+                </>
                 <div className="border-t border-border/70 pt-6">
                   <SectionHeader
                     title={t("settingsPage.prompts.title")}

@@ -182,7 +182,7 @@ const MAIN_WINDOW_CONFIG = {
   height: WINDOW_SIZES.BASE.height,
   title: "Voice Recorder",
   webPreferences: {
-    preload: path.join(__dirname, "..", "..", "preload.js"),
+    preload: path.join(__dirname, "..", "..", "dist-electron", "preload.cjs"),
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,
@@ -221,7 +221,7 @@ const CONTROL_PANEL_CONFIG = {
   // paints its own background on top) — see the transparent flag below.
   backgroundColor: process.platform === "darwin" ? "#00000000" : "#1c1c2e",
   webPreferences: {
-    preload: path.join(__dirname, "..", "..", "preload.js"),
+    preload: path.join(__dirname, "..", "..", "dist-electron", "preload.cjs"),
     nodeIntegration: false,
     contextIsolation: true,
     // sandbox: false is required because the preload script bridges IPC
@@ -276,7 +276,7 @@ const NOTIFICATION_WINDOW_CONFIG = {
   show: false,
   acceptFirstMouse: true,
   webPreferences: {
-    preload: path.join(__dirname, "..", "..", "preload.js"),
+    preload: path.join(__dirname, "..", "..", "dist-electron", "preload.cjs"),
     nodeIntegration: false,
     contextIsolation: true,
     sandbox: true,

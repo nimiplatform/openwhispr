@@ -2,7 +2,7 @@ import { SIGN_IN_PROMPTED_AT_KEY } from "../../utils/requestSignIn";
 import { PENDING_LOCAL_MODELS_KEY } from "./pendingLocalModels";
 import type { PermissionGuideId } from "../../types/permissionGuide";
 
-export const ONBOARDING_SESSION_KEY = "onboardingSessionV2";
+export const ONBOARDING_SESSION_KEY = "nimiOnboardingSession";
 export const LEGACY_ONBOARDING_STEP_KEY = "onboardingCurrentStep";
 export const ONBOARDING_FLOW_VERSION = 2;
 
@@ -227,37 +227,9 @@ export function resetOnboardingProgress(storage: OnboardingStorage): void {
 }
 
 export function getOnboardingRoute(context: OnboardingRouteContext): OnboardingStepId[] {
-  if (context.authPath === null) return ["auth"];
-
-  const setupChoice = context.skipSetupChoice ? [] : (["setup-choice"] as OnboardingStepId[]);
-
-  const route =
-    context.authPath === "guest"
-      ? // Guests still need the permission grants and a hotkey they have seen:
-        // finalizeOnboarding registers dictationHotkey either way, and skipping
-        // these steps shipped users who neither granted the mic nor knew their
-        // trigger key.
-        (["auth", "permissions", "dictation-hotkey", "setup-choice"] as OnboardingStepId[])
-      : [
-          ...ACCOUNT_ROUTE,
-          ...(context.agentAllowed
-            ? (["assistant-hotkey", "assistant-demo"] as OnboardingStepId[])
-            : []),
-          ...setupChoice,
-        ];
-
-  if (context.requiredModelsPending && context.authPath === "account") {
-    route.splice(route.indexOf("auth") + 1, 0, "required-models");
-  }
-
-  if (context.setupMode && context.setupMode !== "cloud") {
-    route.push(
-      ...SETUP_ROUTES[context.setupMode].filter(
-        (stepId) => context.agentAllowed || !stepId.endsWith("assistant")
-      )
-    );
-  }
-
+  const route = [...ACCOUNT_ROUTE];
+  if (context.agentAllowed) route.push("assistant-hotkey", "assistant-demo");
+  route.push("setup-choice");
   return route;
 }
 

@@ -50,6 +50,7 @@ function loadManager({ gracefulStop } = {}) {
   };
 
   Module._load = function loadWithMocks(request, parent, isMain) {
+    if (request === "./appData") return { getAppDataDirectory: () => "unit-owned-nimi-data" };
     if (request === "./debugLogger") {
       return {
         debug() {},
@@ -60,7 +61,8 @@ function loadManager({ gracefulStop } = {}) {
     }
     if (request === "child_process") {
       return {
-        spawn: () => {
+        spawn: (command, args, options) => {
+          state.spawnOptions = options;
           const child = makeChild(state.nextPid++);
           state.spawnCalls.push(child);
           return child;
@@ -143,7 +145,10 @@ async function waitForReady(manager, timeoutMs = 3000) {
 test("start spawns qdrant, writes the pid entry, and stop clears it", async () => {
   const { manager, state } = loadManager();
 
-  await manager.start();
+  process.env.NIMI_TEST_HOST_MARKER = "non-sensitive-marker";
+  try { await manager.start(); } finally { delete process.env.NIMI_TEST_HOST_MARKER; }
+  assert.equal(state.spawnOptions.cwd, "unit-owned-nimi-data/qdrant-data".replaceAll("/", require("node:path").sep));
+  assert.ok(Object.keys(state.spawnOptions.env).every(key => !key.startsWith("NIMI_")));
 
   assert.equal(manager.isReady(), true);
   assert.equal(manager.getPort(), 6333);

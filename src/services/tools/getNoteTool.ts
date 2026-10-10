@@ -1,9 +1,10 @@
 import type { ToolDefinition, ToolResult } from "./ToolRegistry";
+import { noteTranscriptText } from "../../utils/noteTranscriptText.mjs";
 
 export const getNoteTool: ToolDefinition = {
   name: "get_note",
   description:
-    "Get the full content of a specific note by ID. Use search_notes first to find the note ID.",
+    "Get the original note content, any summary, and the saved speech transcript separately. Use search_notes first to find the note ID.",
   parameters: {
     type: "object",
     properties: {
@@ -17,11 +18,13 @@ export const getNoteTool: ToolDefinition = {
   },
   readOnly: true,
 
-  async execute(args: Record<string, unknown>): Promise<ToolResult> {
+  async execute(args: Record<string, unknown>, context): Promise<ToolResult> {
+    context?.signal.throwIfAborted();
     const id = args.id as number;
 
     try {
       const note = await window.electronAPI.getNote(id);
+      context?.signal.throwIfAborted();
 
       if (!note) {
         return {
@@ -36,7 +39,9 @@ export const getNoteTool: ToolDefinition = {
         data: {
           id: note.id,
           title: note.title,
-          content: note.enhanced_content || note.content,
+          content: note.content,
+          summary: note.enhanced_content || undefined,
+          transcript: noteTranscriptText(note.transcript) || undefined,
           type: note.note_type,
           folder_id: note.folder_id,
           created_at: note.created_at,
@@ -45,6 +50,7 @@ export const getNoteTool: ToolDefinition = {
         displayText: `Retrieved note: "${note.title}"`,
       };
     } catch (error) {
+      context?.signal.throwIfAborted();
       return {
         success: false,
         data: null,

@@ -18,14 +18,6 @@ export function mirrorActiveAccountScope(): () => void {
   let scope: ActiveAccountScope | null = null;
   let broadcastReceived = false;
 
-  const refreshIdentity = () => {
-    if (!scope) return;
-    refreshManagedEnterpriseIdentity(
-      scope.accountId,
-      scope.authGeneration,
-      localStorage.getItem(ACTIVE_WORKSPACE_KEY)
-    );
-  };
   const applyScope = (next: ActiveAccountScope | null) => {
     scope = next;
     if (!next) {
@@ -34,13 +26,8 @@ export function mirrorActiveAccountScope(): () => void {
       return;
     }
     void usePolicyStore.getState().fetchPolicy(next.accountId, next.authGeneration);
-    refreshIdentity();
-  };
-  const onStorage = (event: StorageEvent) => {
-    if (event.key === ACTIVE_WORKSPACE_KEY) refreshIdentity();
   };
 
-  window.addEventListener("storage", onStorage);
   const unsubscribe = window.electronAPI?.onActiveAccountScopeChanged?.((next) => {
     broadcastReceived = true;
     applyScope(next);
@@ -51,7 +38,6 @@ export function mirrorActiveAccountScope(): () => void {
     if (!broadcastReceived) applyScope(next);
   });
   return () => {
-    window.removeEventListener("storage", onStorage);
     unsubscribe?.();
   };
 }

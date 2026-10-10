@@ -1,7 +1,19 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const helper = require("../../src/helpers/systemDefaultMicrophone");
+// These parser/cache cases run in Node; Electron's file logger is incidental.
+const Module = require("node:module");
+const load = Module._load;
+let helper;
+try {
+  Module._load = function (request, parent, ...args) {
+    if (request === "./debugLogger") return { debug() {}, info() {} };
+    return load.call(this, request, parent, ...args);
+  };
+  helper = require("../../src/helpers/systemDefaultMicrophone");
+} finally {
+  Module._load = load;
+}
 
 test("parses a WirePlumber default source", () => {
   assert.deepEqual(

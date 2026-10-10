@@ -15,6 +15,28 @@ function createHandler(state, proxyFetch) {
   });
 }
 
+test("business REST cannot reopen retired inference paths, including normalized paths", async () => {
+  let calls = 0;
+  const handler = createHandler(
+    { current: { token: "business-token", generation: 1 } },
+    async () => {
+      calls++;
+      return new Response("{}");
+    }
+  );
+  for (const path of [
+    "/api/transcribe",
+    "/api/reason",
+    "/api/agent/stream",
+    "/api/notes/../agent/stream",
+    "/api/%61gent/stream",
+  ]) {
+    const result = await handler({ path, method: "POST", expectedAuthGeneration: 1 });
+    assert.equal(result.code, "BUSINESS_API_REQUIRED");
+  }
+  assert.equal(calls, 0);
+});
+
 test("an unvalidated or stale generation never reaches the network", async () => {
   const state = { current: { token: "token-b", generation: 2 } };
   let fetchCalls = 0;

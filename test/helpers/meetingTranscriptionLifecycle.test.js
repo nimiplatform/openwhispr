@@ -18,6 +18,36 @@ function createOwnerWebContents() {
   return ownerWebContents;
 }
 
+test("owner loss while an ordinary stop awaits its tail immediately retires that scope", async () => {
+  const owner = createOwnerWebContents();
+  const tail = createDeferred();
+  const controller = new AbortController();
+  let saved = 1;
+  const lifecycle = createMeetingTranscriptionLifecycle({
+    start: async () => ({ success: true }),
+    stop: async () => {
+      await tail.promise;
+      if (!controller.signal.aborted) saved++;
+      return { success: !controller.signal.aborted };
+    },
+    cancel: () => controller.abort(),
+  });
+  await lifecycle.startSession({ sessionId: "first", ownerWebContents: owner, options: {} });
+  const stop = lifecycle.stopSession("first");
+  await new Promise((resolve) => setImmediate(resolve));
+  owner.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+  assert.equal(controller.signal.aborted, true);
+  tail.resolve();
+  assert.equal((await stop).success, false);
+  assert.equal(saved, 1);
+  assert.equal(
+    (await lifecycle.startSession({ sessionId: "second", ownerWebContents: owner, options: {} }))
+      .success,
+    true
+  );
+  await lifecycle.stopSession("second", { cancel: true });
+});
+
 test("a stop requested during startup waits for startup and tears down that session", async () => {
   const startDeferred = createDeferred();
   const events = [];

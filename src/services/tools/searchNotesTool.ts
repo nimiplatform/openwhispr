@@ -2,6 +2,9 @@ import type { SpaceItem } from "../../types/electron";
 import type { ContainerScope } from "../../types/chat";
 import type { ToolDefinition, ToolResult } from "./ToolRegistry";
 import { resolveLocalNoteId, resolveSpace } from "./utils";
+import { searchNimiNotes } from "../nimiNotes";
+import i18n from "../../i18n";
+import { noteTranscriptText, noteTextPreview } from "../../utils/noteTranscriptText.mjs";
 
 const MAX_CONTENT_LENGTH = 500;
 
@@ -46,7 +49,8 @@ export function createSearchNotesTool(options: SearchToolOptions): ToolDefinitio
     },
     readOnly: true,
 
-    async execute(args: Record<string, unknown>): Promise<ToolResult> {
+    async execute(args, context): Promise<ToolResult> {
+      context?.signal.throwIfAborted();
       const query = args.query as string;
       const limit = typeof args.limit === "number" ? args.limit : 5;
       const spaceName = fixedScope ? undefined : (args.space as string | undefined);
@@ -78,7 +82,7 @@ export function createSearchNotesTool(options: SearchToolOptions): ToolDefinitio
         strategies.push(() => executeCloudSearch(query, limit, space, spaces));
       }
       strategies.push(() =>
-        executeLocalSearch(query, limit, true, space, spaces, spaceId, folderId)
+        executeLocalSearch(query, limit, true, space, spaces, spaceId, folderId, context?.signal)
       );
       strategies.push(() =>
         executeLocalSearch(query, limit, false, space, spaces, spaceId, folderId)
@@ -86,9 +90,18 @@ export function createSearchNotesTool(options: SearchToolOptions): ToolDefinitio
 
       for (let i = 0; i < strategies.length; i++) {
         try {
-          return await strategies[i]();
+          context?.signal.throwIfAborted();
+          const result = await strategies[i]();
+          context?.signal.throwIfAborted();
+          return result;
         } catch (error) {
-          if (i === strategies.length - 1) {
+          context?.signal.throwIfAborted();
+          if (
+            i === strategies.length - 1 ||
+            ["Note search account changed", "Nimi App session changed"].some((reason) =>
+              (error as Error).message.includes(reason)
+            )
+          ) {
             return {
               success: false,
               data: null,
@@ -109,9 +122,14 @@ function summaryText(
   space: SpaceItem | undefined,
   semantic: boolean
 ): string {
-  const scope = space ? ` in ${space.name}` : "";
-  if (count === 0) return `No notes found for "${query}"${scope}`;
-  return `Found ${count} note${count === 1 ? "" : "s"} for "${query}"${scope}${semantic ? " (semantic search)" : ""}`;
+  const scope = space ? i18n.t("nimi.searchScope", { space: space.name }) : "";
+  const method = i18n.t(semantic ? "nimi.searchSemantic" : "nimi.searchKeyword");
+  return i18n.t(count === 0 ? "nimi.searchEmpty" : "nimi.searchResults", {
+    count,
+    query,
+    scope,
+    method,
+  });
 }
 
 async function executeLocalSearch(
@@ -121,11 +139,16 @@ async function executeLocalSearch(
   space: SpaceItem | undefined,
   spaces: SpaceItem[],
   spaceId: number | null,
-  folderId: number | null
+  folderId: number | null,
+  signal?: AbortSignal
 ): Promise<ToolResult> {
-  const notes = semantic
-    ? await window.electronAPI.semanticSearchNotes(query, limit, spaceId, folderId)
-    : await window.electronAPI.searchNotes(query, limit, spaceId, folderId);
+  const response = semantic
+    ? await searchNimiNotes(query, limit, spaceId, folderId, signal)
+    : {
+        notes: await window.electronAPI.searchNotes(query, limit, spaceId, folderId),
+        mode: "keyword",
+      };
+  const notes = response.notes;
 
   const spaceNameById = new Map(spaces.map((s) => [s.id, s.name]));
   const results = notes.map((note) => ({
@@ -134,13 +157,19 @@ async function executeLocalSearch(
     date: note.created_at,
     type: note.note_type,
     space: spaceNameById.get(note.space_id) ?? null,
-    content: (note.enhanced_content || note.content).slice(0, MAX_CONTENT_LENGTH),
+    content: noteTextPreview(note.content, query, MAX_CONTENT_LENGTH),
+    summary: note.enhanced_content
+      ? noteTextPreview(note.enhanced_content, query, MAX_CONTENT_LENGTH)
+      : undefined,
+    transcript: note.transcript
+      ? noteTextPreview(noteTranscriptText(note.transcript), query, MAX_CONTENT_LENGTH)
+      : undefined,
   }));
 
   return {
     success: true,
     data: results,
-    displayText: summaryText(results.length, query, space, semantic),
+    displayText: summaryText(results.length, query, space, response.mode === "hybrid"),
   };
 }
 

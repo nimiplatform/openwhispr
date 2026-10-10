@@ -9,6 +9,7 @@ const originalLoad = Module._load;
 const broadcasts = [];
 
 Module._load = function patchedLoad(request, parent, isMain) {
+  if (request === "electron") return { app: { isReady: () => false, isPackaged: false } };
   if (request === "./windowBroadcast") {
     return {
       broadcastToWindows: (channel, payload) => broadcasts.push({ channel, payload }),
@@ -44,7 +45,7 @@ function makeRequest(body) {
 }
 
 function makeResponse() {
-  return {
+  return Object.assign(new EventEmitter(), {
     headersSent: false,
     statusCode: null,
     payload: "",
@@ -55,7 +56,7 @@ function makeResponse() {
     end(body = "") {
       this.payload = body;
     },
-  };
+  });
 }
 
 test("CLI request body limit counts UTF-8 bytes, not JavaScript characters", async () => {

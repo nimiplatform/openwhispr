@@ -12,15 +12,19 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 const DatabaseManager = require("../../src/helpers/database.js");
 Module._load = originalLoad;
-const { buildNoteSearchQuery } = require("../../src/helpers/noteSearch.js");
+const {
+  buildNoteSearchQuery,
+  noteKeywordText,
+  noteTranscriptText,
+} = require("../../src/helpers/noteSearch.js");
 
 test("buildNoteSearchQuery builds quoted prefix queries", () => {
   for (const [input, expected] of [
     ["hello", '"hello"*'],
     ["hello world", '"hello"* "world"*'],
     ["Привет мир", '"Привет"* "мир"*'],
-    ["中文", '"中文"*'],
-    ["東京", '"東京"*'],
+    ["中文", '"中 文"*'],
+    ["東京", '"東 京"*'],
     ["مرحبا", '"مرحبا"*'],
     ["café", '"café"*'],
     ["cafe\u0301", '"café"*'],
@@ -85,7 +89,7 @@ function createSearchDatabase() {
     ["OR operation", "literal operator note"],
   ]) {
     const { lastInsertRowid } = insertNote.run(title, content);
-    insertFts.run(lastInsertRowid, title, content);
+    insertFts.run(lastInsertRowid, noteKeywordText(title), noteKeywordText(content));
   }
 
   const manager = Object.create(DatabaseManager.prototype);
@@ -126,4 +130,25 @@ test("DatabaseManager.searchNotes treats FTS5 operators and punctuation as text"
   assert.equal(manager.searchNotes("hello -world", 10)[0]?.title, "hello world");
   assert.deepEqual(manager.searchNotes("title:", 10), []);
   assert.deepEqual(manager.searchNotes('foo"bar', 10), []);
+});
+
+test("structured speech becomes readable material without metadata and Chinese queries match inside speech", (t) => {
+  const raw = JSON.stringify([
+    { text: "先说预算调整为83万元。", source: "mic", id: "PRIVATE_METADATA" },
+    { text: "quartz deadline", source: "system", recognition: { text: "NOT_SPOKEN" } },
+  ]);
+  const speech = noteTranscriptText(raw);
+  assert.equal(speech, "先说预算调整为83万元。\nquartz deadline");
+  assert.doesNotMatch(speech, /PRIVATE_METADATA|NOT_SPOKEN/);
+  const { manager, sqlite } = createSearchDatabase();
+  t.after(() => sqlite.close());
+  const id = sqlite
+    .prepare("INSERT INTO notes(title, content) VALUES('Plain title', 'Manual body')")
+    .run().lastInsertRowid;
+  sqlite
+    .prepare("INSERT INTO notes_fts(rowid, title, content) VALUES(?, ?, ?)")
+    .run(id, "Plain title", noteKeywordText(speech));
+  assert.equal(manager.searchNotes("预算", 10)[0].id, id);
+  assert.equal(manager.searchNotes("预算调整", 10)[0].id, id);
+  assert.equal(manager.searchNotes("quartz", 10)[0].id, id);
 });

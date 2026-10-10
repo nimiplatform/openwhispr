@@ -1,276 +1,245 @@
-const fs = require("fs");
-const path = require("path");
+// @ts-check
+const fs = require("node:fs");
+const { readPcmWavInfo, readPcmWavWindow } = require("./nimiPcmWav");
+const vectors = require("./speakerRepresentation");
+const tokenStore = require("./tokenStore");
+const businessAI = require("./nimiBusinessAI");
 const debugLogger = require("./debugLogger");
-const { getModelsDirForService } = require("./modelDirUtils");
-const onnxWorkerClient = require("./onnxWorkerClient");
-
 const SAMPLE_RATE = 16000;
-const EMBEDDING_DIM = 512;
 const MIN_SEGMENT_SECONDS = 1.5;
-const MIN_SEGMENT_SAMPLES = SAMPLE_RATE * MIN_SEGMENT_SECONDS;
 const MAX_EMBEDDING_SECONDS = 8;
-const MAX_EMBEDDING_SAMPLES = SAMPLE_RATE * MAX_EMBEDDING_SECONDS;
-const BYTES_PER_SAMPLE = 2;
-// Same as the meeting path's per-speaker centroids.
-const CENTROID_SEGMENTS_PER_CLUSTER = 3;
-// Enough for the RIFF, fmt and metadata chunks ffmpeg writes before "data".
-const WAV_HEADER_READ_BYTES = 64 * 1024;
-const MODEL_FILE = "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx";
-// Live meetings extract during remote speech, so this normally fires once a meeting and its
-// post-meeting diarization are done (a longer silence mid-meeting costs one reload). The
-// unload lets the idle ONNX worker exit.
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
-
+function contextChanged() {
+  return Object.assign(new Error("Nimi speaker session or selection changed"), {
+    code: "SPEAKER_CONTEXT_CHANGED",
+  });
+}
+function sampleWav(samples) {
+  if (!(samples instanceof Float32Array) || samples.some((value) => !Number.isFinite(value)))
+    throw new Error("Speaker audio must contain finite original samples");
+  const wav = Buffer.alloc(44 + samples.length * 4);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(wav.length - 8, 4);
+  wav.write("WAVEfmt ", 8);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(3, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(SAMPLE_RATE, 24);
+  wav.writeUInt32LE(SAMPLE_RATE * 4, 28);
+  wav.writeUInt16LE(4, 32);
+  wav.writeUInt16LE(32, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(samples.length * 4, 40);
+  samples.forEach((value, i) => wav.writeFloatLE(value, 44 + i * 4));
+  return wav;
+}
 class SpeakerEmbeddings {
   constructor() {
-    this.loadPromise = null;
-    this.loadedGeneration = null;
-    this.operationQueue = Promise.resolve();
-    this.idleTimer = null;
+    /** @type {import('@nimiplatform/kit/shell/electron/main').NimiElectronAppBusinessServices | null} */
+    this.services = null;
+    this.generation = 0;
+    /** @type {Set<AbortController>} */
+    this.pending = new Set();
+    /** @type {() => string | null} */
+    this.getAccountId = () => null;
+    this.getAuthGeneration = () => tokenStore.getGeneration();
   }
-
-  getModelPath() {
-    if (process.resourcesPath) {
-      const bundledPath = path.join(process.resourcesPath, "bin", "diarization-models", MODEL_FILE);
-      if (fs.existsSync(bundledPath)) {
-        return bundledPath;
-      }
-    }
-
-    return path.join(getModelsDirForService("diarization"), MODEL_FILE);
+  /** @param {import('@nimiplatform/kit/shell/electron/main').NimiElectronAppBusinessServices | null} services */
+  bind(services) {
+    this.invalidate();
+    this.services = services;
   }
-
+  invalidate() {
+    this.generation += 1;
+    this.services = null;
+    for (const controller of this.pending) controller.abort();
+  }
+  async unload() {
+    this.generation += 1;
+    for (const controller of this.pending) controller.abort();
+  }
   isAvailable() {
-    return fs.existsSync(this.getModelPath());
+    return Boolean(this.services);
   }
-
-  _ensureLoaded() {
-    if (this.loadPromise && this.loadedGeneration === onnxWorkerClient.generation) {
-      return this.loadPromise;
-    }
-    if (!this.isAvailable()) {
-      return Promise.reject(
-        new Error(`Speaker embedding model not found at ${this.getModelPath()}`)
+  /** @param {Uint8Array} bytes @param {{signal?: AbortSignal, cancelSignal?: AbortSignal, onCancel?: (fact: unknown) => void}} [options] */
+  async _extractAudio(bytes, { signal, cancelSignal, onCancel } = {}) {
+    signal?.throwIfAborted();
+    const services = this.services;
+    if (!services) throw new Error("Nimi App session is unavailable. Open Nimi and sign in.");
+    const generation = this.generation,
+      account = this.getAccountId(),
+      authGeneration = this.getAuthGeneration();
+    const controller = new AbortController();
+    this.pending.add(controller);
+    const abortSource = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", abortSource, { once: true });
+    const assertCurrent = () => {
+      controller.signal.throwIfAborted();
+      if (
+        services !== this.services ||
+        generation !== this.generation ||
+        account !== this.getAccountId() ||
+        authGeneration !== this.getAuthGeneration()
+      )
+        throw contextChanged();
+    };
+    const selectionIdentity = async () => {
+      assertCurrent();
+      const config = await services.aiConfig.get();
+      assertCurrent();
+      const selection = config.effectiveSelections.find(
+        (item) => item.capabilityContract === "audio.speaker.embed"
       );
-    }
-    const modelPath = this.getModelPath();
-    debugLogger.debug("speaker-embeddings loading model", { modelPath });
-    this.loadedGeneration = onnxWorkerClient.generation;
-    this.loadPromise = onnxWorkerClient
-      .request("speaker.load", { modelPath })
-      .then(() => debugLogger.debug("speaker-embeddings model loaded"))
-      .catch((err) => {
-        this.loadPromise = null;
-        throw err;
-      });
-    return this.loadPromise;
-  }
-
-  _enqueue(operation) {
-    const result = this.operationQueue.then(operation);
-    this.operationQueue = result.catch(() => {});
-    return result;
-  }
-
-  _clearIdleTimer() {
-    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
-    this.idleTimer = null;
-  }
-
-  _armIdleTimer() {
-    this._clearIdleTimer();
-    this.idleTimer = setTimeout(() => {
-      this.idleTimer = null;
-      this.unload().catch((err) =>
-        debugLogger.warn("speaker-embeddings idle unload failed", { error: err?.message })
-      );
-    }, IDLE_TIMEOUT_MS);
-    this.idleTimer.unref();
-  }
-
-  _extractEmbeddingFromSamples(samples) {
-    // A timer armed by an earlier extract must not queue an unload behind this one.
-    this._clearIdleTimer();
-    return this._enqueue(async () => {
-      try {
-        await this._ensureLoaded();
-
-        const samplesBuffer = samples.buffer.slice(
-          samples.byteOffset,
-          samples.byteOffset + samples.byteLength
+      if (selection?.state !== "ready" || !selection.resource)
+        throw Object.assign(
+          new Error("Configure an available speaker representation model in Nimi AI settings"),
+          { code: "SPEAKER_SELECTION_UNAVAILABLE" }
         );
-
-        // No transfer-list: MessagePortMain can't transfer ArrayBuffers, so the samples are cloned.
-        const { embeddingBuffer } = await onnxWorkerClient.request("speaker.extract", {
-          samplesBuffer,
-        });
-
-        if (!embeddingBuffer) return null;
-        return new Float32Array(embeddingBuffer);
-      } finally {
-        this._armIdleTimer();
-      }
-    });
+      const intent = config.config?.capabilities.find(
+        (item) => item.capabilityContract === "audio.speaker.embed"
+      );
+      const resource = selection.resource;
+      return JSON.stringify([
+        intent,
+        resource.oneofKind === "local"
+          ? [
+              "local",
+              resource.local.loadoutRef,
+              resource.local.implementation,
+              resource.local.configuredFeatures,
+            ]
+          : [
+              "cloud",
+              resource.cloud.connector.connectorRef,
+              resource.cloud.target.implementation,
+              resource.cloud.target.providerModelTarget,
+            ],
+      ]);
+    };
+    try {
+      const selection = await selectionIdentity();
+      await businessAI.assertAllowed();
+      assertCurrent();
+      const { runNimiAudioJob } = require("./nimiAsyncAudioJob");
+      const { job } = await runNimiAudioJob({
+        ai: services.ai,
+        spec: {
+          type: "audio-speaker-embed",
+          mimeType: "audio/wav",
+          audioSource: { type: "bytes", bytes },
+        },
+        signal: controller.signal,
+        cancelSignal,
+        assertCurrent,
+        onCancel,
+      });
+      await businessAI.assertAllowed();
+      assertCurrent();
+      if ((await selectionIdentity()) !== selection) throw contextChanged();
+      return vectors.representation(job.speakerEmbedding);
+    } finally {
+      signal?.removeEventListener("abort", abortSource);
+      this.pending.delete(controller);
+    }
   }
-
-  unload() {
-    return this._enqueue(async () => {
-      try {
-        await onnxWorkerClient.request("speaker.unload", {});
-      } finally {
-        this.loadPromise = null;
-        this.loadedGeneration = null;
-        await onnxWorkerClient.releaseIfIdle();
-      }
-    });
-  }
-
-  async extractEmbeddingFromSamples(samples) {
-    if (samples.length < MIN_SEGMENT_SAMPLES) return null;
-    const capped =
-      samples.length > MAX_EMBEDDING_SAMPLES
-        ? samples.subarray(samples.length - MAX_EMBEDDING_SAMPLES)
-        : samples;
-    return this._extractEmbeddingFromSamples(capped);
-  }
-
-  async extractEmbedding(wavPath, startSec, endSec) {
-    if (endSec - startSec < MIN_SEGMENT_SECONDS) return null;
-
-    const buf = fs.readFileSync(wavPath);
-    const { byteOffset, numSamples } = this._embeddingWindow(
-      this._parseWavHeader(buf),
-      startSec,
-      endSec
+  /** @param {Float32Array} samples @param {{signal?: AbortSignal}} [options] */
+  extractEmbeddingFromSamples(samples, options = {}) {
+    options.signal?.throwIfAborted();
+    if (samples.length < SAMPLE_RATE * MIN_SEGMENT_SECONDS) return Promise.resolve(null);
+    const capped = samples.subarray(
+      Math.max(0, samples.length - SAMPLE_RATE * MAX_EMBEDDING_SECONDS)
     );
-    return this._extractEmbeddingFromSamples(this._decodePcm16(buf, byteOffset, numSamples));
+    return this._extractAudio(sampleWav(capped), options);
   }
-
-  // One voice per diarized cluster, from its longest segments. Reads only the
-  // audio each embedding uses: an upload's WAV runs about 115 MB an hour. A
-  // cluster whose extraction fails goes without a voice; the others keep theirs.
-  async extractClusterCentroids(wavPath, segments, { signal = null } = {}) {
+  _window(fd, info, startSec, endSec) {
+    if (
+      !Number.isFinite(startSec) ||
+      !Number.isFinite(endSec) ||
+      startSec < 0 ||
+      endSec <= startSec
+    )
+      throw new Error("Invalid speaker audio interval");
+    const start = Math.floor(Math.max(startSec, endSec - MAX_EMBEDDING_SECONDS) * info.sampleRate);
+    const end = Math.floor(endSec * info.sampleRate);
+    return readPcmWavWindow(fd, info, start, end - start);
+  }
+  /** @param {string} wavPath @param {number} startSec @param {number} endSec @param {{signal?: AbortSignal}} [options] */
+  async extractEmbedding(wavPath, startSec, endSec, options = {}) {
+    options.signal?.throwIfAborted();
+    if (endSec - startSec < MIN_SEGMENT_SECONDS) return null;
+    const fd = fs.openSync(wavPath, "r");
+    try {
+      return await this._extractAudio(
+        this._window(fd, readPcmWavInfo(fd), startSec, endSec),
+        options
+      );
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  /** @param {string} wavPath @param {{speaker: string, start: number, end: number}[]} segments @param {{signal?: AbortSignal}} [options] */
+  async extractClusterCentroids(wavPath, segments, { signal } = {}) {
+    signal?.throwIfAborted();
+    const generation = this.generation,
+      account = this.getAccountId(),
+      authGeneration = this.getAuthGeneration();
+    const assertCurrent = () => {
+      signal?.throwIfAborted();
+      if (
+        generation !== this.generation ||
+        account !== this.getAccountId() ||
+        authGeneration !== this.getAuthGeneration()
+      )
+        throw contextChanged();
+    };
     const bySpeaker = new Map();
     for (const segment of segments) {
       if (segment.end - segment.start < MIN_SEGMENT_SECONDS) continue;
       if (!bySpeaker.has(segment.speaker)) bySpeaker.set(segment.speaker, []);
       bySpeaker.get(segment.speaker).push(segment);
     }
-
-    const centroids = new Map();
-    const fd = fs.openSync(wavPath, "r");
+    const centroids = new Map(),
+      fd = fs.openSync(wavPath, "r");
     try {
-      const header = this._parseWavHeader(this._readBytes(fd, 0, WAV_HEADER_READ_BYTES));
-      for (const [speaker, speakerSegments] of bySpeaker) {
-        if (signal?.aborted) break;
-        const longest = speakerSegments
-          .sort((a, b) => b.end - b.start - (a.end - a.start))
-          .slice(0, CENTROID_SEGMENTS_PER_CLUSTER);
+      const info = readPcmWavInfo(fd);
+      for (const [speaker, entries] of bySpeaker) {
+        assertCurrent();
+        const values = [];
         try {
-          const embeddings = [];
-          for (const segment of longest) {
-            const { byteOffset, numSamples } = this._embeddingWindow(
-              header,
-              segment.start,
-              segment.end
+          for (const segment of entries
+            .sort((a, b) => b.end - b.start - (a.end - a.start))
+            .slice(0, 3)) {
+            assertCurrent();
+            values.push(
+              await this._extractAudio(this._window(fd, info, segment.start, segment.end), {
+                signal,
+              })
             );
-            const pcm = this._readBytes(fd, byteOffset, numSamples * BYTES_PER_SAMPLE);
-            const embedding = await this._extractEmbeddingFromSamples(
-              this._decodePcm16(pcm, 0, numSamples)
-            );
-            if (embedding) embeddings.push(embedding);
+            assertCurrent();
           }
-          if (embeddings.length > 0) centroids.set(speaker, this.computeCentroid(embeddings));
+          if (values.length) centroids.set(speaker, vectors.computeCentroid(values));
         } catch (error) {
-          debugLogger.warn("speaker-embeddings cluster voice unavailable", {
-            speaker,
-            error: error.message,
-          });
+          if (signal?.aborted || error.code === "SPEAKER_CONTEXT_CHANGED") throw error;
+          debugLogger.warn("Speaker representation unavailable", { speaker, error: error.message });
         }
       }
     } finally {
       fs.closeSync(fd);
     }
+    assertCurrent();
     return centroids;
   }
-
-  _readBytes(fd, position, length) {
-    const buf = Buffer.alloc(length);
-    const bytesRead = fs.readSync(fd, buf, 0, length, position);
-    return buf.subarray(0, bytesRead);
+  computeCentroid(values) {
+    return vectors.computeCentroid(values);
   }
-
-  // The last MAX_EMBEDDING_SECONDS of the segment, as a byte offset into the WAV.
-  _embeddingWindow({ sampleRate, dataOffset }, startSec, endSec) {
-    const cappedSeconds = Math.min(endSec - startSec, MAX_EMBEDDING_SECONDS);
-    const startSample = Math.floor((endSec - cappedSeconds) * sampleRate);
-    const numSamples = Math.floor(endSec * sampleRate) - startSample;
-    return { byteOffset: dataOffset + startSample * BYTES_PER_SAMPLE, numSamples };
-  }
-
-  // Samples past the end of buf stay silent.
-  _decodePcm16(buf, offset, numSamples) {
-    const samples = new Float32Array(numSamples);
-    for (let i = 0; i < numSamples; i++) {
-      const bytePos = offset + i * BYTES_PER_SAMPLE;
-      if (bytePos + 1 >= buf.length) break;
-      samples[i] = buf.readInt16LE(bytePos) / 32768;
-    }
-    return samples;
-  }
-
-  _parseWavHeader(buf) {
-    let offset = 12;
-    let sampleRate = 16000;
-    let dataOffset = 44;
-
-    while (offset < buf.length - 8) {
-      const chunkId = buf.toString("ascii", offset, offset + 4);
-      const chunkSize = buf.readUInt32LE(offset + 4);
-
-      if (chunkId === "fmt ") {
-        sampleRate = buf.readUInt32LE(offset + 12);
-      } else if (chunkId === "data") {
-        dataOffset = offset + 8;
-        break;
-      }
-
-      offset += 8 + chunkSize;
-    }
-
-    return { sampleRate, dataOffset };
-  }
-
-  computeCentroid(embeddings) {
-    if (embeddings.length === 0) return new Float32Array(EMBEDDING_DIM);
-
-    const centroid = new Float32Array(EMBEDDING_DIM);
-    for (const emb of embeddings) {
-      for (let i = 0; i < EMBEDDING_DIM; i++) {
-        centroid[i] += emb[i];
-      }
-    }
-    for (let i = 0; i < EMBEDDING_DIM; i++) {
-      centroid[i] /= embeddings.length;
-    }
-    return centroid;
-  }
-
   cosineSimilarity(a, b) {
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
-    }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
+    return vectors.cosineSimilarity(a, b);
   }
 }
-
 const instance = new SpeakerEmbeddings();
+tokenStore.subscribe(() => {
+  const services = instance.services;
+  instance.bind(services);
+});
 module.exports = instance;
 module.exports.SpeakerEmbeddings = SpeakerEmbeddings;
 module.exports.MAX_EMBEDDING_SECONDS = MAX_EMBEDDING_SECONDS;

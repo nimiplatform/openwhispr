@@ -82,9 +82,7 @@ export default function ChatView() {
     messages: persistence.messages,
     setMessages: persistence.setMessages,
     allowConnectors: true,
-    onStreamComplete: (_id, content, toolCalls) => {
-      persistence.saveAssistantMessage(content, toolCalls);
-    },
+    onStreamComplete: (_id, content, toolCalls, nimiTranscript) => persistence.saveAssistantMessage(content, toolCalls, nimiTranscript),
   });
   // useChatStreaming returns a fresh object every render; cancelStream is
   // stable, so the callbacks below depend on it rather than on `streaming`.

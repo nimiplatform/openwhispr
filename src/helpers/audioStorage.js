@@ -1,3 +1,4 @@
+const { getAppDataDirectory } = require("./appData");
 const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
@@ -6,7 +7,7 @@ const { parseDbTimestamp } = require("./dbTimestamp");
 
 class AudioStorageManager {
   constructor() {
-    this.audioDir = path.join(app.getPath("userData"), "audio");
+    this.audioDir = path.join(getAppDataDirectory(), "audio");
     this.ensureAudioDir();
   }
 

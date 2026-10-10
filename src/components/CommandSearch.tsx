@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useUiLocale } from "../hooks/useUiLocale";
+import { searchNimiConversations } from "../services/nimiNotes";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   Search,
@@ -91,6 +92,8 @@ export default function CommandSearch({
   const [spaces, setSpaces] = useState<SpaceItem[]>([]);
   const [scopeSpaceId, setScopeSpaceId] = useState<number | null>(null);
   const [conversations, setConversations] = useState<ConversationResult[]>([]);
+  const [searchError, setSearchError] = useState(false);
+  const [searchPending, setSearchPending] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -147,6 +150,10 @@ export default function CommandSearch({
   useEffect(() => {
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     const version = ++searchVersionRef.current;
+    const controller = new AbortController();
+    setSearchError(false);
+    setSearchPending(false);
+    if (!open) return;
 
     if (isConversationsMode) {
       if (!query.trim()) {
@@ -164,9 +171,11 @@ export default function CommandSearch({
         });
         return;
       }
+      setConversations([]);
+      setSearchPending(true);
       searchTimerRef.current = setTimeout(async () => {
         try {
-          const r = await window.electronAPI?.semanticSearchConversations?.(query, 20);
+          const { conversations: r } = await searchNimiConversations(query, 20, controller.signal);
           if (searchVersionRef.current === version && r) {
             setConversations(
               r.map((c) => ({
@@ -178,7 +187,12 @@ export default function CommandSearch({
             );
           }
         } catch {
-          /* keep current */
+          if (searchVersionRef.current === version && !controller.signal.aborted) {
+            setConversations([]);
+            setSearchError(true);
+          }
+        } finally {
+          if (searchVersionRef.current === version) setSearchPending(false);
         }
       }, 200);
     } else {
@@ -200,9 +214,10 @@ export default function CommandSearch({
     }
 
     return () => {
+      controller.abort();
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
-  }, [query, isConversationsMode, scopeSpaceId]);
+  }, [query, isConversationsMode, scopeSpaceId, open]);
 
   if (notes !== prevNotes || query !== prevQuery) {
     setPrevNotes(notes);
@@ -434,12 +449,16 @@ export default function CommandSearch({
           <div ref={listRef} className="overflow-y-auto max-h-[340px] p-1.5">
             {!hasResults ? (
               <div className="flex items-center justify-center py-10">
-                <p className="text-xs text-muted-foreground/70">
-                  {query.trim()
-                    ? t("commandSearch.noResults")
-                    : isConversationsMode
-                      ? t("chat.noConversations")
-                      : t("commandSearch.emptyState")}
+                <p role="status" className="text-xs text-muted-foreground/70">
+                  {searchPending
+                    ? t("common.loading")
+                    : searchError
+                      ? t("nimi.searchUnavailable")
+                      : query.trim()
+                        ? t("commandSearch.noResults")
+                        : isConversationsMode
+                          ? t("chat.noConversations")
+                          : t("commandSearch.emptyState")}
                 </p>
               </div>
             ) : isConversationsMode ? (

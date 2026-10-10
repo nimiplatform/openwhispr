@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { SectionHeader } from "../ui/SettingsSection";
-import InferenceConfigEditor from "./InferenceConfigEditor";
+import NimiAISettings from "./NimiAISettings";
 
 export default function ChatAgentSettings() {
   const { t } = useTranslation();
@@ -10,7 +10,7 @@ export default function ChatAgentSettings() {
 
   return (
     <div className="space-y-6">
-      <InferenceConfigEditor scope="chatIntelligence" />
+      <NimiAISettings initialCapability="text.generate" />
 
       <div>
         <SectionHeader

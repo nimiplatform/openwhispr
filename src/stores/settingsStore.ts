@@ -873,7 +873,6 @@ function migrateRetiredCloudModels() {
   }
 }
 
-migrateRetiredCloudModels();
 
 export interface SettingsState
   extends
@@ -1459,18 +1458,6 @@ function invalidateApiKeyCaches(
     | "openrouter"
     | "corti"
 ) {
-  if (provider) {
-    if (_ReasoningService) {
-      _ReasoningService.clearApiKeyCache(provider);
-    } else {
-      import("../services/ReasoningService")
-        .then((mod) => {
-          _ReasoningService = mod.default;
-          _ReasoningService.clearApiKeyCache(provider);
-        })
-        .catch(() => {});
-    }
-  }
   if (isBrowser) window.dispatchEvent(new Event("api-key-changed"));
   debouncedPersistToEnv();
 }
@@ -2237,13 +2224,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setBedrockRegion: (value: string) => {
     if (isBrowser) localStorage.setItem("bedrockRegion", value);
     set({ bedrockRegion: value });
-    window.electronAPI?.saveBedrockRegion?.(value);
+
     debouncedPersistToEnv();
   },
   setBedrockProfile: (value: string) => {
     if (isBrowser) localStorage.setItem("bedrockProfile", value);
     set({ bedrockProfile: value });
-    window.electronAPI?.saveBedrockProfile?.(value);
+
     debouncedPersistToEnv();
   },
   setBedrockAccessKeyId: (key: string) => {
@@ -2264,7 +2251,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setAzureEndpoint: (value: string) => {
     if (isBrowser) localStorage.setItem("azureEndpoint", value);
     set({ azureEndpoint: value });
-    window.electronAPI?.saveAzureEndpoint?.(value);
+
     debouncedPersistToEnv();
   },
   setAzureApiKey: (key: string) => {
@@ -2275,13 +2262,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setAzureDeploymentName: (value: string) => {
     if (isBrowser) localStorage.setItem("azureDeploymentName", value);
     set({ azureDeploymentName: value });
-    window.electronAPI?.saveAzureDeployment?.(value);
+
     debouncedPersistToEnv();
   },
   setAzureApiVersion: (value: string) => {
     if (isBrowser) localStorage.setItem("azureApiVersion", value);
     set({ azureApiVersion: value });
-    window.electronAPI?.saveAzureApiVersion?.(value);
+
     debouncedPersistToEnv();
   },
   setVertexAuthMode: (value: string) => {
@@ -2291,13 +2278,13 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setVertexProject: (value: string) => {
     if (isBrowser) localStorage.setItem("vertexProject", value);
     set({ vertexProject: value });
-    window.electronAPI?.saveVertexProject?.(value);
+
     debouncedPersistToEnv();
   },
   setVertexLocation: (value: string) => {
     if (isBrowser) localStorage.setItem("vertexLocation", value);
     set({ vertexLocation: value });
-    window.electronAPI?.saveVertexLocation?.(value);
+
     debouncedPersistToEnv();
   },
   setVertexApiKey: (key: string) => {
@@ -2449,7 +2436,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setAutoUpdatesEnabled: (enabled: boolean) => {
     if (isBrowser) localStorage.setItem("autoUpdatesEnabled", String(enabled));
     set({ autoUpdatesEnabled: enabled });
-    if (isBrowser) window.electronAPI?.setAutoUpdatesEnabled?.(enabled);
   },
   setGcalPrimaryOnly: (value: boolean) => {
     if (isBrowser) localStorage.setItem("gcalPrimaryOnly", String(value));
@@ -2473,72 +2459,45 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setDictationSileroEnabled: (value: boolean) => {
     if (isBrowser) localStorage.setItem("dictationSileroEnabled", String(value));
     useSettingsStore.setState({ dictationSileroEnabled: value });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ dictationSileroEnabled: value });
-    }
   },
   setNoteRecordingSileroEnabled: (value: boolean) => {
     if (isBrowser) localStorage.setItem("noteRecordingSileroEnabled", String(value));
     useSettingsStore.setState({ noteRecordingSileroEnabled: value });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ noteRecordingSileroEnabled: value });
-    }
   },
   setMeetingSileroEnabled: (value: boolean) => {
     if (isBrowser) localStorage.setItem("meetingSileroEnabled", String(value));
     useSettingsStore.setState({ meetingSileroEnabled: value });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ meetingSileroEnabled: value });
-    }
   },
   setMeetingAecEnabled: createBooleanSetter("meetingAecEnabled"),
   setWhisperVadThreshold: (value: number) => {
     const next = clampVadValue("threshold", value);
     if (isBrowser) localStorage.setItem("whisperVadThreshold", String(next));
     useSettingsStore.setState({ whisperVadThreshold: next });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ threshold: next });
-    }
   },
   setWhisperVadMinSpeechDurationMs: (value: number) => {
     const next = clampVadValue("minSpeechDurationMs", value);
     if (isBrowser) localStorage.setItem("whisperVadMinSpeechDurationMs", String(next));
     useSettingsStore.setState({ whisperVadMinSpeechDurationMs: next });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ minSpeechDurationMs: next });
-    }
   },
   setWhisperVadMinSilenceDurationMs: (value: number) => {
     const next = clampVadValue("minSilenceDurationMs", value);
     if (isBrowser) localStorage.setItem("whisperVadMinSilenceDurationMs", String(next));
     useSettingsStore.setState({ whisperVadMinSilenceDurationMs: next });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ minSilenceDurationMs: next });
-    }
   },
   setWhisperVadMaxSpeechDurationS: (value: number) => {
     const next = clampVadValue("maxSpeechDurationS", value);
     if (isBrowser) localStorage.setItem("whisperVadMaxSpeechDurationS", String(next));
     useSettingsStore.setState({ whisperVadMaxSpeechDurationS: next });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ maxSpeechDurationS: next });
-    }
   },
   setWhisperVadSpeechPadMs: (value: number) => {
     const next = clampVadValue("speechPadMs", value);
     if (isBrowser) localStorage.setItem("whisperVadSpeechPadMs", String(next));
     useSettingsStore.setState({ whisperVadSpeechPadMs: next });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ speechPadMs: next });
-    }
   },
   setWhisperVadSamplesOverlap: (value: number) => {
     const next = clampVadValue("samplesOverlap", value);
     if (isBrowser) localStorage.setItem("whisperVadSamplesOverlap", String(next));
     useSettingsStore.setState({ whisperVadSamplesOverlap: next });
-    if (isBrowser) {
-      window.electronAPI?.setWhisperVadConfig?.({ samplesOverlap: next });
-    }
   },
   setPanelStartPosition: (position: "bottom-right" | "center" | "bottom-left") => {
     if (get().panelStartPosition === position) return;
@@ -3203,13 +3162,6 @@ export function clearMissingLocalModelSelections(isInstalled: (modelId: string) 
 }
 
 /** Reconciles every scope against the models actually on disk. */
-export async function reconcileLocalModelSelections(): Promise<void> {
-  if (!isBrowser || !window.electronAPI?.modelGetAll) return;
-
-  const models = await window.electronAPI.modelGetAll();
-  const installed = new Set(models.filter((model) => model.isDownloaded).map((model) => model.id));
-  clearMissingLocalModelSelections((modelId) => installed.has(modelId));
-}
 
 /**
  * Repoints any scope still selecting a cloud model the registry no longer ships
@@ -3305,149 +3257,6 @@ export async function initializeSettings(): Promise<void> {
     } catch (err) {
       logger.warn(
         "Failed to sync notification preferences on startup",
-        { error: (err as Error).message },
-        "settings"
-      );
-    }
-
-    try {
-      const [
-        openai,
-        anthropic,
-        gemini,
-        groq,
-        xai,
-        mistral,
-        openrouter,
-        cortiClientId,
-        cortiClientSecret,
-        cortiApiKey,
-        tinfoil,
-        customTx,
-        customRx,
-        noteFormattingCustom,
-        translationCustom,
-        dictationAgentCustom,
-        dictationAgentVisionCustom,
-        chatAgentCustom,
-        bedrockAccessKeyId,
-        bedrockSecretAccessKey,
-        bedrockSessionToken,
-        azureApiKey,
-        vertexApiKey,
-        deepgram,
-        assemblyai,
-      ] = await Promise.all([
-        window.electronAPI.getOpenAIKey?.(),
-        window.electronAPI.getAnthropicKey?.(),
-        window.electronAPI.getGeminiKey?.(),
-        window.electronAPI.getGroqKey?.(),
-        window.electronAPI.getXaiKey?.(),
-        window.electronAPI.getMistralKey?.(),
-        window.electronAPI.getOpenrouterKey?.(),
-        window.electronAPI.getCortiClientId?.(),
-        window.electronAPI.getCortiClientSecret?.(),
-        window.electronAPI.getCortiKey?.(),
-        window.electronAPI.getTinfoilKey?.(),
-        window.electronAPI.getCustomTranscriptionKey?.(),
-        window.electronAPI.getCleanupCustomKey?.(),
-        window.electronAPI.getNoteFormattingCustomKey?.(),
-        window.electronAPI.getTranslationCustomKey?.(),
-        window.electronAPI.getDictationAgentCustomKey?.(),
-        window.electronAPI.getDictationAgentVisionCustomKey?.(),
-        window.electronAPI.getChatAgentCustomKey?.(),
-        window.electronAPI.getBedrockAccessKeyId?.(),
-        window.electronAPI.getBedrockSecretAccessKey?.(),
-        window.electronAPI.getBedrockSessionToken?.(),
-        window.electronAPI.getAzureApiKey?.(),
-        window.electronAPI.getVertexApiKey?.(),
-        window.electronAPI.getDeepgramKey?.(),
-        window.electronAPI.getAssemblyAIKey?.(),
-      ]);
-
-      useSettingsStore.setState({
-        openaiApiKey: openai || "",
-        anthropicApiKey: anthropic || "",
-        geminiApiKey: gemini || "",
-        groqApiKey: groq || "",
-        xaiApiKey: xai || "",
-        mistralApiKey: mistral || "",
-        openrouterApiKey: openrouter || "",
-        cortiClientId: cortiClientId || "",
-        cortiClientSecret: cortiClientSecret || "",
-        cortiApiKey: cortiApiKey || "",
-        tinfoilApiKey: tinfoil || "",
-        customTranscriptionApiKey: customTx || "",
-        cleanupCustomApiKey: customRx || "",
-        bedrockAccessKeyId: bedrockAccessKeyId || "",
-        ...(await migrateScopeCustomKeys([
-          ["noteFormattingCustomApiKey", noteFormattingCustom, "saveNoteFormattingCustomKey"],
-          ["translationCustomApiKey", translationCustom, "saveTranslationCustomKey"],
-          ["dictationAgentCustomApiKey", dictationAgentCustom, "saveDictationAgentCustomKey"],
-          [
-            "dictationAgentVisionCustomApiKey",
-            dictationAgentVisionCustom,
-            "saveDictationAgentVisionCustomKey",
-          ],
-          ["chatAgentCustomApiKey", chatAgentCustom, "saveChatAgentCustomKey"],
-        ])),
-        bedrockSecretAccessKey: bedrockSecretAccessKey || "",
-        bedrockSessionToken: bedrockSessionToken || "",
-        azureApiKey: azureApiKey || "",
-        vertexApiKey: vertexApiKey || "",
-        deepgramApiKey: deepgram || "",
-        assemblyaiApiKey: assemblyai || "",
-      });
-
-      if (localStorage.getItem("_dictationAgentSeeded") === "key-pending") {
-        const { chatAgentCustomApiKey, setDictationAgentCustomApiKey } =
-          useSettingsStore.getState();
-        if (chatAgentCustomApiKey) setDictationAgentCustomApiKey(chatAgentCustomApiKey);
-        localStorage.setItem("_dictationAgentSeeded", "1");
-      }
-
-      if (!localStorage.getItem("enterpriseSetupMode")) {
-        // One-time migration. "Managed by default" is meant to equip employees who never chose a
-        // provider — not to move someone who deliberately set up local, self-hosted, BYOK, or
-        // enterprise inference. Anyone with an existing choice starts on "manual" and opts in.
-        const hasChosenProvider =
-          Object.values(INFERENCE_SCOPES).some((scope) => {
-            const stored = localStorage.getItem(scope.storeKeys.mode as string);
-            return Boolean(stored) && stored !== "openwhispr";
-          }) ||
-          Boolean(
-            useSettingsStore.getState().bedrockProfile.trim() ||
-            (bedrockAccessKeyId && bedrockSecretAccessKey) ||
-            azureApiKey
-          );
-        const enterpriseSetupMode: EnterpriseSetupMode = hasChosenProvider ? "manual" : "auto";
-        localStorage.setItem("enterpriseSetupMode", enterpriseSetupMode);
-        useSettingsStore.setState({ enterpriseSetupMode });
-      }
-
-      for (const key of STALE_SECRET_LOCALSTORAGE_KEYS) {
-        localStorage.removeItem(key);
-      }
-      // Latch for the one-time semantic reindex that no longer exists (#2143).
-      localStorage.removeItem("semanticReindexVersion");
-
-      // Users who configured OpenRouter through the Custom tab keep their key
-      // in the shared custom slot — seed the dedicated slot from it once.
-      if (!openrouter && customRx) {
-        const hydrated = useSettingsStore.getState();
-        const usesOpenRouterViaCustom = (Object.keys(INFERENCE_SCOPES) as InferenceScope[]).some(
-          (scope) => {
-            const cfg = selectResolvedLLMConfig(hydrated, scope);
-            return cfg.provider === "custom" && (cfg.cloudBaseUrl || "").includes("openrouter.ai");
-          }
-        );
-        if (usesOpenRouterViaCustom) {
-          hydrated.setOpenrouterApiKey(customRx);
-        }
-      }
-    } catch (err) {
-      logger.warn(
-        "Failed to hydrate secrets from main process",
         { error: (err as Error).message },
         "settings"
       );
@@ -3601,18 +3410,6 @@ export async function initializeSettings(): Promise<void> {
       );
     }
 
-    try {
-      await window.electronAPI.setAutoUpdatesEnabled?.(
-        useSettingsStore.getState().autoUpdatesEnabled
-      );
-    } catch (err) {
-      logger.warn(
-        "Failed to sync automatic updates preference on startup",
-        { error: (err as Error).message },
-        "settings"
-      );
-    }
-
     // The main-process DB is the source of truth for the Apple Calendar connection
     try {
       const status = await window.electronAPI.acalGetConnectionStatus?.();
@@ -3672,39 +3469,6 @@ export async function initializeSettings(): Promise<void> {
     } catch (err) {
       logger.warn(
         "Failed to sync speaker diarization preference on startup",
-        { error: (err as Error).message },
-        "settings"
-      );
-    }
-
-    try {
-      const currentState = useSettingsStore.getState();
-      await window.electronAPI.setWhisperVadConfig?.({
-        dictationSileroEnabled: currentState.dictationSileroEnabled,
-        noteRecordingSileroEnabled: currentState.noteRecordingSileroEnabled,
-        meetingSileroEnabled: currentState.meetingSileroEnabled,
-        threshold: currentState.whisperVadThreshold,
-        minSpeechDurationMs: currentState.whisperVadMinSpeechDurationMs,
-        minSilenceDurationMs: currentState.whisperVadMinSilenceDurationMs,
-        maxSpeechDurationS: currentState.whisperVadMaxSpeechDurationS,
-        speechPadMs: currentState.whisperVadSpeechPadMs,
-        samplesOverlap: currentState.whisperVadSamplesOverlap,
-      });
-    } catch (err) {
-      logger.warn(
-        "Failed to sync whisper VAD config on startup",
-        { error: (err as Error).message },
-        "settings"
-      );
-    }
-
-    reconcileRetiredCloudModelSelections();
-
-    try {
-      await reconcileLocalModelSelections();
-    } catch (err) {
-      logger.warn(
-        "Failed to reconcile local model selections on startup",
         { error: (err as Error).message },
         "settings"
       );

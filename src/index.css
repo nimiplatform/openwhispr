@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "@nimiplatform/kit/ui/styles.css";
+@import "@nimiplatform/kit/ui/themes/light.css";
 /* Dictation window feature styles (voice pill, assistant/live-transcript panels). */
 @import "./styles/dictation-panel.css";
 

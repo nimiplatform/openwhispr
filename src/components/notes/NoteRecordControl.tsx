@@ -6,7 +6,11 @@ import { LiveWaveform } from "../ui/LiveWaveform";
 import { GRADIENT_CIRCLE } from "../ui/gradientCircle";
 import { analyserRms } from "../../utils/audioLevel";
 import { formatMmSs } from "../../utils/formatDuration";
-import { getMicAnalyser, useMeetingRecordingStore } from "../../stores/meetingRecordingStore";
+import {
+  cancelMeetingFinalization,
+  getMicAnalyser,
+  useMeetingRecordingStore,
+} from "../../stores/meetingRecordingStore";
 
 // Module-level buffer: there is a single meeting mic analyser at a time.
 const micLevelBuf: { current: Float32Array<ArrayBuffer> | null } = { current: null };
@@ -38,6 +42,7 @@ export function RecordingWave({ className }: { className?: string }) {
 }
 
 interface NoteRecordControlProps {
+  noteId: number;
   isRecording: boolean;
   isProcessing: boolean;
   disabled?: boolean;
@@ -47,6 +52,7 @@ interface NoteRecordControlProps {
 
 /** Record button for the note header: a brand circle that widens into a stop + live-wave + timer pill. */
 export default function NoteRecordControl({
+  noteId,
   isRecording,
   isProcessing,
   disabled = false,
@@ -58,6 +64,14 @@ export default function NoteRecordControl({
   // count: this control remounts whenever the user switches notes, and counted
   // ticks would restart at zero (and drift while the window is throttled).
   const startedAt = useMeetingRecordingStore((s) => s.recordingStartedAt);
+  const isFinalizing = useMeetingRecordingStore(
+    (s) => s.isFinalizing && s.recordingNoteId === noteId
+  );
+  const isCanceling = useMeetingRecordingStore((s) => s.isCancelingFinalization);
+  const captureReleased = useMeetingRecordingStore((s) => s.micCaptureStatus === "inactive");
+  const outcome = useMeetingRecordingStore((s) =>
+    s.recordingNoteId === noteId ? s.finalizationOutcome : null
+  );
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -70,63 +84,87 @@ export default function NoteRecordControl({
   const elapsed = isRecording && startedAt != null ? Math.floor((now - startedAt) / 1000) : 0;
 
   return (
-    <div
-      className={cn(
-        "h-[30px] shrink-0 overflow-hidden transition-[width] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]",
-        isRecording ? "w-40" : "w-[30px]"
+    <div className="flex items-center gap-2">
+      {!isRecording && !isFinalizing && outcome && (
+        <span role="status" className="text-xs text-muted-foreground">
+          {t(outcome === "saved" ? "notes.meeting.saved" : "notes.meeting.canceled")}
+        </span>
       )}
-    >
-      {isRecording ? (
-        <button
-          type="button"
-          onClick={onStop}
-          aria-label={t("notes.editor.stop")}
-          title={t("notes.editor.stop")}
-          className={cn(
-            "group flex h-[30px] w-full items-center gap-2 rounded-full ps-1 pe-3",
-            RECORDING_SURFACE,
-            "border border-primary/15 transition-[border-color] duration-200 hover:border-primary/30",
-            "dark:border-primary/25 dark:hover:border-primary/40",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-          )}
-        >
-          <span
+      <div
+        className={cn(
+          "h-[30px] shrink-0 overflow-hidden transition-[width] duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]",
+          isFinalizing ? "w-auto" : isRecording ? "w-40" : "w-[30px]"
+        )}
+      >
+        {isFinalizing ? (
+          <button
+            type="button"
+            onClick={() => void cancelMeetingFinalization()}
+            disabled={isCanceling || !captureReleased}
+            aria-label={t("notes.meeting.cancelFinishing")}
+            title={t("notes.meeting.cancelFinishing")}
             className={cn(
-              "flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full",
-              GRADIENT_CIRCLE,
-              "transition-[filter] duration-150 group-hover:brightness-110"
+              "flex h-[30px] items-center gap-2 rounded-full border border-primary/15 px-3 text-xs",
+              RECORDING_SURFACE,
+              "disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
             )}
           >
-            <Square size={8} fill="currentColor" />
-          </span>
-          <LiveWaveform readLevel={readMeetingMicLevel} bars={10} className="h-3.5 flex-1" />
-          <span className="shrink-0 text-xs font-medium tabular-nums text-foreground/85">
-            {formatMmSs(elapsed)}
-          </span>
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onStart}
-          disabled={disabled || isProcessing}
-          aria-label={t("notes.editor.transcribe")}
-          title={disabled ? t("common.managedByOrg") : undefined}
-          className={cn(
-            "flex h-[30px] w-[30px] items-center justify-center rounded-full",
-            GRADIENT_CIRCLE,
-            "transition-[filter,transform] duration-150 hover:brightness-110 active:scale-95",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
-            disabled && "pointer-events-none opacity-40 saturate-0",
-            isProcessing && "pointer-events-none"
-          )}
-        >
-          {isProcessing ? (
-            <Loader2 size={14} className="animate-spin text-white/90" />
-          ) : (
-            <Mic size={15} />
-          )}
-        </button>
-      )}
+            <Loader2 size={14} className="shrink-0 animate-spin" />
+            <span role="status">{t("notes.meeting.finishing")}</span>
+            <span className="text-primary">{t("notes.meeting.cancelFinishing")}</span>
+          </button>
+        ) : isRecording ? (
+          <button
+            type="button"
+            onClick={onStop}
+            aria-label={t("notes.editor.stop")}
+            title={t("notes.editor.stop")}
+            className={cn(
+              "group flex h-[30px] w-full items-center gap-2 rounded-full ps-1 pe-3",
+              RECORDING_SURFACE,
+              "border border-primary/15 transition-[border-color] duration-200 hover:border-primary/30",
+              "dark:border-primary/25 dark:hover:border-primary/40",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+            )}
+          >
+            <span
+              className={cn(
+                "flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full",
+                GRADIENT_CIRCLE,
+                "transition-[filter] duration-150 group-hover:brightness-110"
+              )}
+            >
+              <Square size={8} fill="currentColor" />
+            </span>
+            <LiveWaveform readLevel={readMeetingMicLevel} bars={10} className="h-3.5 flex-1" />
+            <span className="shrink-0 text-xs font-medium tabular-nums text-foreground/85">
+              {formatMmSs(elapsed)}
+            </span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onStart}
+            disabled={disabled || isProcessing}
+            aria-label={t("notes.editor.transcribe")}
+            title={disabled ? t("common.managedByOrg") : undefined}
+            className={cn(
+              "flex h-[30px] w-[30px] items-center justify-center rounded-full",
+              GRADIENT_CIRCLE,
+              "transition-[filter,transform] duration-150 hover:brightness-110 active:scale-95",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+              disabled && "pointer-events-none opacity-40 saturate-0",
+              isProcessing && "pointer-events-none"
+            )}
+          >
+            {isProcessing ? (
+              <Loader2 size={14} className="animate-spin text-white/90" />
+            ) : (
+              <Mic size={15} />
+            )}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

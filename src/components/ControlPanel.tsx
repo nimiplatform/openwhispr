@@ -1,19 +1,21 @@
 import React, { Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { useShallow } from "zustand/react/shallow";
+
 import { Button } from "./ui/button";
 import { PAGE_CONTENT_WIDTH_CLASS } from "./ui/pageWidth";
 import { cn } from "./lib/utils";
 import { BIDI_VALUE_TOKEN, BidiInterpolatedText } from "./ui/BidiInterpolatedText";
-import { Download, RefreshCw, Loader2, AlertTriangle, Zap } from "./icons";
+import { Download, RefreshCw, Loader2, AlertTriangle } from "./icons";
 import UpgradePrompt from "./UpgradePrompt";
 import PostMigrationOnboarding from "./PostMigrationOnboarding";
-import { RequiredModelsBanner } from "./RequiredModelsBanner";
+
 import { ConfirmDialog, AlertDialog } from "./ui/dialog";
 import { useDialogs } from "../hooks/useDialogs";
+import { usePermissions } from "../hooks/usePermissions";
 import { useHotkey } from "../hooks/useHotkey";
 import { useToast } from "./ui/useToast";
-import { useUpdater } from "../hooks/useUpdater";
+import { NIMI_USER_CANCEL } from "../services/nimiRequest";
+
 import { useSettings } from "../hooks/useSettings";
 import { useAuth } from "../hooks/useAuth";
 import { useJoinableWorkspaces } from "../hooks/useJoinableWorkspaces";
@@ -30,21 +32,20 @@ import {
   updateTranscription as updateInStore,
   clearTranscriptions as clearStore,
 } from "../stores/transcriptionStore";
-import {
-  getSettings,
-  selectPolicyEffectiveSettings,
-  useSettingsStore,
-} from "../stores/settingsStore";
+import { getSettings, useSettingsStore } from "../stores/settingsStore";
 import { usePolicyStore } from "../stores/policyStore";
 import { usePolicySnapshot } from "../hooks/usePolicy";
 import {
   isAgentAllowed,
   isControlPanelViewAllowed,
   isPolicyActionAllowed,
-  isTranscriptionContextAllowed,
+  isTranscriptionSelectionAllowed,
   isUpdateRequiredByOrg,
 } from "../stores/policyRules";
-import { getManagedTranscriptionResolution } from "../services/managedTranscription";
+import { getNimiClient, prepareNimiAIWork, runNimiRequest } from "../services/nimiClient";
+import { resolvePrompt } from "../config/prompts";
+import { getDictionaryHintWords } from "../utils/snippets";
+import { getBaseLanguageCode, getLanguageLabel } from "../utils/languageSupport";
 import {
   useIsMeetingMode,
   useIsNarrowWindow,
@@ -64,7 +65,7 @@ import NewNoteMenu from "./notes/NewNoteMenu";
 
 import { getCachedPlatform } from "../utils/platform";
 import { isAccessibilitySkipped } from "../utils/permissions";
-import { useGpuBannerAvailability } from "../hooks/useGpuBannerAvailability";
+
 import { startRecordingForNote, useCreateNote } from "../hooks/useCreateNote";
 import { useSignInCloudNudge } from "../hooks/useSignInCloudNudge";
 import {
@@ -75,17 +76,12 @@ import {
   initializeNotes,
   subscribeMeetingNotificationFolders,
 } from "../stores/noteStore";
-import { fetchProviders as fetchStreamingProviders } from "../stores/streamingProvidersStore";
-import {
-  executeTranslationChain,
-  hasTextContent,
-  shouldRunTranslateStep,
-} from "../helpers/translationChain";
-import { applyChineseScript, resolveChineseScriptTarget } from "../utils/chineseScript";
+
+import { shouldRunTranslateStep } from "../helpers/translationChain";
 import { getAgentName } from "../utils/agentName";
 import HistoryView from "./HistoryView";
 import BackgroundActionToastListener from "./notes/BackgroundActionToastListener";
-import { providerErrorToastProps } from "../utils/describeProviderError";
+
 import SpaceSyncToastListener from "./notes/SpaceSyncToastListener";
 import { syncService } from "../services/SyncService.js";
 import logger from "../utils/logger";
@@ -170,9 +166,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     folderId: number | null;
     event: any;
   } | null>(null);
-  const [gpuBannerDismissed, setGpuBannerDismissed] = useState(
-    () => localStorage.getItem("gpuBannerDismissedUnified") === "true"
-  );
+
   const updateReadyToastShown = useRef(false);
   const { hotkey } = useHotkey();
   const { toast } = useToast();
@@ -200,15 +194,6 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     isPastDue: usage?.isPastDue ?? false,
   });
 
-  const {
-    status: updateStatus,
-    downloadProgress,
-    isDownloading,
-    isInstalling,
-    downloadUpdate,
-    installUpdate,
-  } = useUpdater();
-
   const openTranscriptionSettings = useCallback(() => {
     setSettingsSection("transcription");
     setShowSettings(true);
@@ -234,26 +219,6 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
   // Policy-effective, because the settings pane the GPU banner links to renders
   // the clamped mode — see eligibleGpuOffers.
   const policySnapshot = usePolicySnapshot();
-  const gpuBannerSettings = useSettingsStore(
-    useShallow((settings) => {
-      const effective = selectPolicyEffectiveSettings(settings, policySnapshot);
-      return {
-        useLocalWhisper: effective.useLocalWhisper,
-        localTranscriptionProvider: effective.localTranscriptionProvider,
-        useCleanupModel: effective.useCleanupModel,
-        cleanupMode: effective.cleanupMode,
-        useDictationAgent: effective.useDictationAgent,
-        dictationAgentMode: effective.dictationAgentMode,
-      };
-    })
-  );
-  const gpuAccelAvailable = useGpuBannerAvailability({
-    settings: gpuBannerSettings,
-    agentAllowedByPolicy,
-    dismissed: gpuBannerDismissed,
-    settingsOpen: showSettings,
-    platform,
-  });
 
   const {
     confirmDialog,
@@ -263,6 +228,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     hideConfirmDialog,
     hideAlertDialog,
   } = useDialogs();
+  const { micPermissionStatus } = usePermissions(showAlertDialog);
 
   const loadTranscriptions = useCallback(
     async (includeDiscarded?: boolean) => {
@@ -319,21 +285,6 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
-
-  useEffect(() => {
-    if (updateStatus.updateDownloaded && !isDownloading) {
-      if (!updateReadyToastShown.current) {
-        updateReadyToastShown.current = true;
-        toast({
-          title: t("controlPanel.update.readyTitle"),
-          description: t("controlPanel.update.readyDescription"),
-          variant: "success",
-        });
-      }
-    } else {
-      updateReadyToastShown.current = false;
-    }
-  }, [updateStatus.updateDownloaded, isDownloading, toast, t]);
 
   useEffect(() => {
     const dispose = window.electronAPI?.onLimitReached?.(
@@ -506,9 +457,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     return () => cleanup?.();
   }, [toast, t]);
 
-  useEffect(() => {
-    fetchStreamingProviders();
-  }, []);
+  useEffect(() => {}, []);
 
   const handleMeetingRecordingRequestHandled = useCallback(
     () => setMeetingRecordingRequest(null),
@@ -629,295 +578,111 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
     [toast, t]
   );
 
+  const historyRetryControllers = useRef(new Map<number, AbortController>());
+  useEffect(
+    () => () => {
+      for (const controller of historyRetryControllers.current.values()) controller.abort();
+      historyRetryControllers.current.clear();
+    },
+    [activeView]
+  );
+
   const retryTranscription = useCallback(
     async (id: number, options?: { isRecover?: boolean }) => {
+      if (historyRetryControllers.current.has(id)) return;
+      const controller = new AbortController();
+      historyRetryControllers.current.set(id, controller);
       try {
+        await prepareNimiAIWork(controller.signal);
         const s = getSettings();
-        const managed = getManagedTranscriptionResolution();
-        if (managed?.kind === "error") {
-          toast({
-            title: managed.messageKey ? t(managed.messageKey) : managed.message,
-            variant: "destructive",
-          });
-          return;
-        }
-        if (!managed && !isTranscriptionContextAllowed(usePolicyStore.getState(), s, "dictation")) {
+        const snapshot = await getNimiClient().aiConfig.get();
+        controller.signal.throwIfAborted();
+        const selection = snapshot.effectiveSelections.find(
+          (value) => value.capabilityContract === "audio.transcribe"
+        );
+        if (selection?.state !== "ready")
+          throw new Error(selection?.reasons.join(", ") || "AI_LOCAL_CONFIGURATION_NOT_CONFIGURED");
+        const resource = selection.resource;
+        const mode = resource?.oneofKind === "local" ? "local" : "providers";
+        const provider = resource?.oneofKind === "cloud" ? resource.cloud.connector.provider : "";
+        if (!isTranscriptionSelectionAllowed(usePolicyStore.getState(), { mode, provider })) {
           toast({ title: t("common.managedByOrg"), variant: "default" });
           return;
         }
-        const result = await window.electronAPI.retryTranscription(id, {
-          managed,
-          useLocalWhisper: s.useLocalWhisper,
-          localTranscriptionProvider: s.localTranscriptionProvider,
-          cloudTranscriptionMode: s.cloudTranscriptionMode,
-          cloudTranscriptionProvider: s.cloudTranscriptionProvider,
-          cloudTranscriptionModel: s.cloudTranscriptionModel,
-          cloudTranscriptionBaseUrl: s.cloudTranscriptionBaseUrl,
-          cortiEnvironment: s.cortiEnvironment,
-          cortiTenant: s.cortiTenant,
-          parakeetModel: s.parakeetModel,
-          cohereModel: s.cohereModel,
-          whisperModel: s.whisperModel,
-          preferredLanguage: s.preferredLanguage,
-          transcriptionMode: s.transcriptionMode,
-          remoteTranscriptionType: s.remoteTranscriptionType,
-          remoteTranscriptionUrl: s.remoteTranscriptionUrl,
-          remoteTranscriptionModel: s.remoteTranscriptionModel,
+        const agentName = getAgentName();
+        const promptOptions = {
+          agentName,
+          language: s.preferredLanguage,
+          customDictionary: getDictionaryHintWords(s),
+          uiLanguage: s.uiLanguage,
+        };
+        const result = await runNimiRequest<{
+          success: boolean;
+          transcription: import("../types/electron").TranscriptionItem;
+          warnings: Array<{ stage: string; message: string }>;
+        }>(
+          "openwhispr.history.retry",
+          {
+            id,
+            preferredLanguage: s.preferredLanguage,
+            language:
+              s.preferredLanguage === "auto" ? "" : getBaseLanguageCode(s.preferredLanguage),
+            prompt: getDictionaryHintWords(s).join(", "),
+            cleanupPrompt: s.useCleanupModel ? resolvePrompt("cleanup", promptOptions) : "",
+            translationPrompt:
+              s.translationTargetLanguage &&
+              shouldRunTranslateStep(s.translationSourceLanguage, s.translationTargetLanguage)
+                ? resolvePrompt("translate", {
+                    ...promptOptions,
+                    targetLanguageLabel: getLanguageLabel(s.translationTargetLanguage),
+                  })
+                : "",
+            translationSourceLanguage: s.translationSourceLanguage,
+            translationTargetLanguage: s.translationTargetLanguage,
+            chineseScriptPreference: s.chineseScriptPreference,
+          },
+          controller.signal
+        );
+        controller.signal.throwIfAborted();
+        updateInStore(result.transcription);
+        toast({
+          title: t(
+            options?.isRecover
+              ? "controlPanel.history.discarded.recovered"
+              : "controlPanel.history.retrySuccess"
+          ),
         });
-        if (result.success && result.transcription) {
-          const rawText = result.transcription.text;
-          let finalTranscription = result.transcription;
-
-          // A translation dictation must re-run cleanup-then-translate on retry, not plain cleanup.
-          let handledTranslation = false;
-          let translationApplied = false;
-          if (result.transcription.route_kind === "translation") {
-            handledTranslation = true;
-            try {
-              const [
-                { default: ReasoningService },
-                { resolveReasoningRoute },
-                { getEffectiveCleanupModel, getSettings: getEffectiveSettings },
-              ] = await Promise.all([
-                import("../services/ReasoningService"),
-                import("../helpers/audioManager"),
-                import("../stores/settingsStore"),
-              ]);
-              const settings = getEffectiveSettings();
-              const agentName = getAgentName();
-              const route = resolveReasoningRoute(rawText, settings, agentName, false, true);
-              if (route.kind === "translation") {
-                const { text, translated } = await executeTranslationChain({
-                  text: rawText,
-                  cleanupReachable: route.cleanupReachable,
-                  runCleanup: (currentText: string) =>
-                    ReasoningService.processText(
-                      currentText,
-                      getEffectiveCleanupModel(),
-                      agentName,
-                      route.cleanupConfig
-                    ),
-                  runTranslate: (currentText: string) =>
-                    ReasoningService.processText(currentText, route.model, agentName, route.config),
-                  shouldTranslate: shouldRunTranslateStep(
-                    settings.translationSourceLanguage,
-                    settings.translationTargetLanguage
-                  ),
-                  onCleanupError: (cleanupError: unknown) => {
-                    logger.warn(
-                      "Cleanup step failed in translation chain, translating raw transcript",
-                      { error: (cleanupError as Error).message },
-                      "transcription"
-                    );
-                    // The chain still translates the raw transcript, so say why cleanup
-                    // was dropped rather than reporting a clean success (#2091).
-                    toast({
-                      title: t("app.toasts.cleanupFailed.title"),
-                      ...providerErrorToastProps(cleanupError, t),
-                      variant: "destructive",
-                    });
-                  },
-                  onEmptyTranslate: () =>
-                    logger.warn(
-                      "Translation step returned empty text, keeping previous text",
-                      {},
-                      "transcription"
-                    ),
-                  onUnchangedTranslate: () =>
-                    logger.warn(
-                      "Translation step returned unchanged text, keeping source text",
-                      {},
-                      "transcription"
-                    ),
-                });
-                translationApplied = translated;
-                if (text !== rawText) {
-                  const updated = await window.electronAPI.updateTranscriptionText(
-                    id,
-                    text,
-                    rawText
-                  );
-                  if (updated.success && updated.transcription) {
-                    finalTranscription = updated.transcription;
-                  }
-                }
-              } else {
-                // Translation disabled/unreachable since recording — fall through to cleanup.
-                handledTranslation = false;
-              }
-            } catch {
-              // Reasoning failed — keep the raw STT result
-            }
-          }
-
-          // Apply AI reasoning if enabled
-          if (!handledTranslation && useCleanupModel) {
-            try {
-              const [
-                { default: ReasoningService },
-                { getEffectiveCleanupModel, isCloudCleanupMode, getSettings },
-              ] = await Promise.all([
-                import("../services/ReasoningService"),
-                import("../stores/settingsStore"),
-              ]);
-              const model = getEffectiveCleanupModel();
-              const isCloud = isCloudCleanupMode();
-              if (model || isCloud) {
-                const agentName = getAgentName();
-                const reasonedText = await ReasoningService.processText(rawText, model, agentName, {
-                  disableThinking: getSettings().cleanupDisableThinking,
-                  requireCompleteOutput: true,
-                });
-                if (hasTextContent(reasonedText) && reasonedText !== rawText) {
-                  const updated = await window.electronAPI.updateTranscriptionText(
-                    id,
-                    reasonedText,
-                    rawText
-                  );
-                  if (updated.success && updated.transcription) {
-                    finalTranscription = updated.transcription;
-                  }
-                }
-              }
-            } catch (cleanupError) {
-              // The row keeps its raw transcript, so the retry must not look like it
-              // cleaned anything — report why, the way dictation does (#2091).
-              toast({
-                title: t("app.toasts.cleanupFailed.title"),
-                ...providerErrorToastProps(cleanupError, t),
-                variant: "destructive",
-              });
-            }
-          }
-
-          // Deterministic Chinese script pass, mirroring dictation (#975). Runs last so
-          // it covers the cleaned/translated text, or the raw transcript when neither ran.
-          // Same rule as audioManager.getEffectiveOutputLanguage: only a completed
-          // translate step moves the text into the target language, so anything else
-          // still has to be scripted as the language that was dictated.
-          try {
-            const outputLanguage =
-              result.transcription.route_kind === "translation"
-                ? (translationApplied
-                    ? s.translationTargetLanguage
-                    : s.translationSourceLanguage) || "auto"
-                : s.preferredLanguage;
-            const scripted = await applyChineseScript(
-              finalTranscription.text,
-              resolveChineseScriptTarget(
-                outputLanguage,
-                s.chineseScriptPreference,
-                finalTranscription.text
-              )
-            );
-            if (scripted !== finalTranscription.text) {
-              const updated = await window.electronAPI.updateTranscriptionText(
-                id,
-                scripted,
-                rawText
-              );
-              if (updated.success && updated.transcription) {
-                finalTranscription = updated.transcription;
-              }
-            }
-          } catch {
-            // Conversion failed — keep the text as transcribed
-          }
-
-          updateInStore(finalTranscription);
+        for (const warning of result.warnings) {
           toast({
             title: t(
-              options?.isRecover
-                ? "controlPanel.history.discarded.recovered"
-                : "controlPanel.history.retrySuccess"
+              warning.stage === "notification"
+                ? "controlPanel.history.retryNotificationWarning"
+                : "controlPanel.history.retryEditingWarning"
             ),
-          });
-        } else {
-          toast({
-            title: t("controlPanel.history.retryError"),
-            ...providerErrorToastProps({ ...result, message: result.error }, t),
+            description: warning.message,
             variant: "destructive",
           });
         }
-      } catch {
-        toast({
-          title: t("controlPanel.history.retryError"),
-          variant: "destructive",
-        });
+      } catch (error) {
+        if (
+          !controller.signal.aborted ||
+          (error as { audioCancellationFailed?: boolean })?.audioCancellationFailed
+        )
+          toast({
+            title: t("controlPanel.history.retryError"),
+            description: error instanceof Error ? error.message : String(error),
+            variant: "destructive",
+          });
+      } finally {
+        historyRetryControllers.current.delete(id);
       }
     },
-    [toast, t, useCleanupModel]
+    [toast, t]
   );
 
   const toggleShowDiscarded = useCallback(() => {
     loadTranscriptions(!showDiscarded);
   }, [loadTranscriptions, showDiscarded]);
-
-  const handleUpdateClick = async () => {
-    if (updateStatus.updateDownloaded) {
-      showConfirmDialog({
-        title: t("controlPanel.update.installTitle"),
-        description: t("controlPanel.update.installDescription"),
-        onConfirm: async () => {
-          try {
-            await installUpdate();
-          } catch (error) {
-            toast({
-              title: t("controlPanel.update.couldNotInstallTitle"),
-              description: t("controlPanel.update.couldNotInstallDescription"),
-              variant: "destructive",
-            });
-          }
-        },
-      });
-    } else if (updateStatus.updateAvailable && !isDownloading) {
-      try {
-        await downloadUpdate();
-      } catch (error) {
-        toast({
-          title: t("controlPanel.update.couldNotDownloadTitle"),
-          description: t("controlPanel.update.couldNotDownloadDescription"),
-          variant: "destructive",
-        });
-      }
-    }
-  };
-
-  const getUpdateButtonContent = () => {
-    if (isInstalling) {
-      return (
-        <>
-          <Loader2 size={14} className="animate-spin" />
-          <span>{t("controlPanel.update.installing")}</span>
-        </>
-      );
-    }
-    if (isDownloading) {
-      return (
-        <>
-          <Loader2 size={14} className="animate-spin" />
-          <span>{Math.round(downloadProgress)}%</span>
-        </>
-      );
-    }
-    if (updateStatus.updateDownloaded) {
-      return (
-        <>
-          <RefreshCw size={14} />
-          <span>{t("controlPanel.update.installButton")}</span>
-        </>
-      );
-    }
-    if (updateStatus.updateAvailable) {
-      return (
-        <>
-          <Download size={14} />
-          <span>{t("controlPanel.update.availableButton")}</span>
-        </>
-      );
-    }
-    return null;
-  };
 
   return (
     <div className="h-screen bg-surface-window flex flex-col">
@@ -1069,24 +834,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
             userImage={user?.image}
             isSignedIn={isSignedIn}
             authLoaded={authLoaded}
-            upsell={upsell}
-            updateAction={
-              !updateStatus.isDevelopment &&
-              (updateStatus.updateAvailable ||
-                updateStatus.updateDownloaded ||
-                isDownloading ||
-                isInstalling) ? (
-                <Button
-                  variant={updateStatus.updateDownloaded ? "default" : "outline"}
-                  size="sm"
-                  onClick={handleUpdateClick}
-                  disabled={isInstalling || isDownloading}
-                  className="gap-1.5 text-xs w-full h-7"
-                >
-                  {getUpdateButtonContent()}
-                </Button>
-              ) : undefined
-            }
+            upsell="hide"
           />
         </div>
         <main className="flex-1 flex flex-col overflow-hidden p-2">
@@ -1132,7 +880,7 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                   </div>
                 </div>
               )}
-              <RequiredModelsBanner />
+
               {usage?.isPastDue && activeView === "home" && (
                 <div className={cn(PAGE_CONTENT_WIDTH_CLASS, "px-6 mb-3")}>
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 p-3">
@@ -1165,80 +913,59 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
                   </div>
                 </div>
               )}
-              {(gpuAccelAvailable.transcription || gpuAccelAvailable.intelligence) &&
-                activeView === "home" &&
-                !gpuBannerDismissed && (
-                  <div className={cn(PAGE_CONTENT_WIDTH_CLASS, "px-6 mb-3")}>
-                    <div className="rounded-lg border border-primary/20 dark:border-primary/15 bg-primary/5 p-3">
-                      <div className="flex items-start gap-3">
-                        <div className="shrink-0 w-8 h-8 rounded-md bg-primary/10 dark:bg-primary/15 flex items-center justify-center">
-                          <Zap size={16} className="text-primary" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-foreground mb-0.5">
-                            {t("controlPanel.gpu.bannerTitle")}
-                          </p>
-                          <p className="text-xs text-muted-foreground mb-2">
-                            {t("controlPanel.gpu.bannerDescription")}
-                          </p>
-                          <div className="flex items-center gap-3">
-                            <Button
-                              variant="default"
-                              size="sm"
-                              className="h-7 text-xs"
-                              onClick={() => {
-                                setSettingsSection(
-                                  gpuAccelAvailable.transcription
-                                    ? "transcription"
-                                    : gpuAccelAvailable.intelligence === "dictationAgent"
-                                      ? "dictationAgent"
-                                      : "intelligence"
-                                );
-                                setShowSettings(true);
-                              }}
-                            >
-                              {t("controlPanel.gpu.enableButton")}
-                            </Button>
-                            <button
-                              onClick={() => {
-                                setGpuBannerDismissed(true);
-                                localStorage.setItem("gpuBannerDismissedUnified", "true");
-                              }}
-                              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              {t("controlPanel.gpu.dismissButton")}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
+
               {activeView === "home" && (
-                <HistoryView
-                  history={history}
-                  isLoading={isLoading}
-                  hotkey={hotkey}
-                  aiCTADismissed={aiCTADismissed}
-                  setAiCTADismissed={setAiCTADismissed}
-                  useCleanupModel={useCleanupModel}
-                  copyToClipboard={copyToClipboard}
-                  deleteTranscription={deleteTranscription}
-                  clearAllTranscriptions={clearAllTranscriptions}
-                  onShowAudioInFolder={showAudioInFolder}
-                  onRetryTranscription={retryTranscription}
-                  showDiscarded={showDiscarded}
-                  onToggleDiscarded={toggleShowDiscarded}
-                  userName={user?.name}
-                  onOpenSettings={(section) => {
-                    setSettingsSection(section);
-                    setShowSettings(true);
-                  }}
-                  onOpenIntegrations={() => {
-                    setIntegrationsSection("calendars");
-                    setActiveView("integrations");
-                  }}
-                />
+                <>
+                  {micPermissionStatus !== "granted" && (
+                    <div
+                      role="status"
+                      className="mb-4 flex items-center justify-between gap-4 rounded-xl border border-border p-4"
+                    >
+                      <p>
+                        {t(
+                          micPermissionStatus === "unknown"
+                            ? "nimi.microphoneUnknown"
+                            : "nimi.microphoneRequired"
+                        )}
+                      </p>
+                      <Button
+                        onClick={() => {
+                          setSettingsSection("general");
+                          setShowSettings(true);
+                        }}
+                      >
+                        {t("nimi.microphoneSettings")}
+                      </Button>
+                    </div>
+                  )}
+                  <HistoryView
+                    history={history}
+                    isLoading={isLoading}
+                    hotkey={hotkey}
+                    aiCTADismissed={aiCTADismissed}
+                    setAiCTADismissed={setAiCTADismissed}
+                    useCleanupModel={useCleanupModel}
+                    copyToClipboard={copyToClipboard}
+                    deleteTranscription={deleteTranscription}
+                    clearAllTranscriptions={clearAllTranscriptions}
+                    onShowAudioInFolder={showAudioInFolder}
+                    onRetryTranscription={retryTranscription}
+                    onCancelRetry={(id) =>
+                      historyRetryControllers.current.get(id)?.abort(NIMI_USER_CANCEL)
+                    }
+                    showDiscarded={showDiscarded}
+                    onToggleDiscarded={toggleShowDiscarded}
+                    userName={user?.name}
+                    onOpenSettings={(section) => {
+                      setSettingsSection(section);
+                      setShowSettings(true);
+                    }}
+                    onOpenIntegrations={() => {
+                      setIntegrationsSection("calendars");
+                      setActiveView("integrations");
+                    }}
+                  />
+                </>
               )}
               {activeView === "insights" && (
                 <Suspense fallback={null}>

@@ -3,11 +3,7 @@ const debugLogger = require("./debugLogger");
 const sidecarPidFile = require("./sidecarPidFile");
 
 const EXPECTED_BINARY_FRAGMENTS = {
-  parakeet: ["sherpa-onnx-ws-", "sherpa-onnx-online-ws-"],
-  whisper: ["whisper-server"],
-  llama: ["llama-server"],
   qdrant: ["qdrant"],
-  diarization: ["sherpa-onnx-diarize"],
 };
 
 // A wedged sidecar can ignore SIGTERM entirely (observed with qdrant spinning
@@ -90,6 +86,9 @@ async function reapStaleSidecars({
   const entries = sidecarPidFile.readAll();
   await Promise.all(
     entries.map(async ({ name, pid }) => {
+      // Only current App-owned sidecars belong to normal startup cleanup.
+      // Retired/unknown entries are left intact for explicit one-time cleanup.
+      if (!Object.hasOwn(EXPECTED_BINARY_FRAGMENTS, name)) return;
       const fragments = EXPECTED_BINARY_FRAGMENTS[name];
       if (fragments && isProcessAlive(pid)) {
         const command = processCommand(pid);

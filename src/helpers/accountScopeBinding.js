@@ -1,3 +1,4 @@
+const { getAppDataDirectory } = require("./appData");
 // Persists the last VALIDATED account-scope binding so a boot without a
 // resolvable session (offline, expired lease) can restore note visibility
 // for the credential still on disk. The sha256 token fingerprint makes the
@@ -12,7 +13,7 @@ const debugLogger = require("./debugLogger");
 
 const BINDING_VERSION = 1;
 
-const bindingFile = () => path.join(app.getPath("userData"), "account-scope-binding.json");
+const bindingFile = () => path.join(getAppDataDirectory(), "account-scope-binding.json");
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(token, "utf8").digest("hex");

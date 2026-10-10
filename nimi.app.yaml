@@ -1,0 +1,33 @@
+app_id: ai.nimi.openwhispr
+display_name: OpenWhispr
+version: 1.10.2
+profile: standalone
+manifest_role: submitted-input
+app_access:
+  - runtime.consume
+capability_contract_refs:
+  - audio.transcribe
+  - text.generate
+  - text.embed
+  - audio.speaker.embed
+required_standardized_feature_refs: []
+storage_policy:
+  kind: app-owned-os-storage
+  os_storage_disclosure:
+    - path_pattern: "%USERPROFILE%/.openwhispr-nimi/**"
+      purpose: OpenWhispr notes, recordings, history, settings and optional business service credentials
+      expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+    - path_pattern: "~/Library/Application Support/OpenWhispr-Nimi/**"
+      purpose: macOS App-owned notes, recordings, history and settings
+      expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+    - path_pattern: "~/.config/OpenWhispr-Nimi/**"
+      purpose: Linux App-owned notes, recordings, history and settings
+      expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+metadata:
+  summary: Desktop dictation, voice assistance and meeting notes using Nimi AI.
+  icon: src/assets/icon.png
+  readme: NIMI_APP.md
+local_development:
+  electron:
+    renderer_origin: http://127.0.0.1:5183
+    host_source_directory: src-electron

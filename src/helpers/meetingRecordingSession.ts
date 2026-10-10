@@ -62,6 +62,7 @@ export function createMeetingRecordingStopBarrier(): MeetingRecordingStopBarrier
 
 export interface MeetingRecordingStartOperation {
   sessionId: string;
+  signal: AbortSignal;
   isCurrent(): boolean;
   markMainStartAttempted(): void;
   markCommitted(): void;
@@ -76,6 +77,7 @@ interface PendingStart<T> {
   settleStart: () => void;
   settled: Promise<void>;
   canceled: boolean;
+  controller: AbortController;
   committed: boolean;
   mainStartAttempted: boolean;
   mainStopPromise: Promise<unknown> | null;
@@ -100,6 +102,7 @@ export function createMeetingRecordingStartCoordinator(): MeetingRecordingStartC
     activeStart = state;
     const operation: MeetingRecordingStartOperation = {
       sessionId: state.sessionId,
+      signal: state.controller.signal,
       isCurrent: () => activeStart === state && !state.canceled,
       markMainStartAttempted: () => {
         state.mainStartAttempted = true;
@@ -159,6 +162,7 @@ export function createMeetingRecordingStartCoordinator(): MeetingRecordingStartC
       settleStart,
       settled,
       canceled: false,
+      controller: new AbortController(),
       committed: false,
       mainStartAttempted: false,
       mainStopPromise: null,
@@ -177,6 +181,7 @@ export function createMeetingRecordingStartCoordinator(): MeetingRecordingStartC
     }
 
     activeStart.canceled = true;
+    activeStart.controller.abort();
     return activeStart.settled;
   };
 

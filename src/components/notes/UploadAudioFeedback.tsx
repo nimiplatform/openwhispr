@@ -43,15 +43,17 @@ export function UploadModelSettingsButton({
 interface UploadCompleteWarningsProps {
   partialWarning: { failed: number; total: number } | null;
   diarizationWarning: boolean;
+  speakerMatchingWarning?: boolean;
   t: (key: string, options?: Record<string, unknown>) => string;
 }
 
 export function UploadCompleteWarnings({
   partialWarning,
   diarizationWarning,
+  speakerMatchingWarning,
   t,
 }: UploadCompleteWarningsProps): React.JSX.Element | null {
-  if (!partialWarning && !diarizationWarning) return null;
+  if (!partialWarning && !diarizationWarning && !speakerMatchingWarning) return null;
 
   return (
     <>
@@ -66,6 +68,11 @@ export function UploadCompleteWarnings({
       {diarizationWarning && (
         <p className={cn(COMPLETION_WARNING, "text-warning")} role="status" aria-live="polite">
           {t("notes.upload.diarizationWarning")}
+        </p>
+      )}
+      {speakerMatchingWarning && (
+        <p className={cn(COMPLETION_WARNING, "text-muted-foreground")}>
+          {t("nimi.speakerMatchingIncomplete")}
         </p>
       )}
     </>

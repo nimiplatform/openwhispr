@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
+const { pathToFileURL } = require("node:url");
 const requestedMainWindowPositions = [];
 const createdBrowserWindows = [];
 const screenListeners = [];
@@ -121,7 +122,7 @@ Module._load = function loadWindowManagerWithStubs(request, parent, isMain) {
       getAppFilePath: () => ({ path: "/app/index.html", query: {} }),
       waitForDevServer: async () => undefined,
     };
-  if (request === "./dockManager") return {};
+  if (request === "./dockManager") return { setControlPanelVisible() {} };
   if (request === "./i18nMain") return { i18nMain: { t: (key) => key } };
   if (request === "./windowConfig") {
     return {
@@ -152,6 +153,73 @@ Module._load = function loadWindowManagerWithStubs(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const WindowManager = require("../../src/helpers/windowManager");
+
+for (const [label, presentation, expected] of [
+  ["hidden", { visible: false, focused: false }, []],
+  ["visible in background", { visible: true, focused: false }, ["inactive"]],
+  ["focused", { visible: true, focused: true }, ["show", "focus"]],
+]) {
+  test(`technical reset preserves the ${label} control panel without inventing focus`, () => {
+    const calls = [];
+    const manager = Object.assign(Object.create(WindowManager.prototype), {
+      _sessionControlPanelPresentation: presentation,
+      _clearControlPanelVisibilityTimer() {},
+      controlPanelWindow: {
+        isDestroyed: () => false,
+        isVisible: () => false,
+        show: () => calls.push("show"),
+        focus: () => calls.push("focus"),
+        showInactive: () => calls.push("inactive"),
+      },
+    });
+    manager._showControlPanel();
+    manager._showControlPanel();
+    assert.deepEqual(calls, [...expected, ...expected]);
+  });
+}
+
+test("an explicit open overrides a hidden reset presentation", async () => {
+  const calls = [];
+  const manager = Object.assign(Object.create(WindowManager.prototype), {
+    _sessionControlPanelPresentation: { visible: false, focused: false },
+    controlPanelWindow: {
+      isDestroyed: () => false,
+      isVisible: () => false,
+      isMinimized: () => false,
+      show: () => calls.push("show"),
+      focus: () => calls.push("focus"),
+    },
+  });
+  await manager.createControlPanelWindow();
+  assert.equal(manager._sessionControlPanelPresentation, undefined);
+  assert.deepEqual(calls, ["show", "focus"]);
+});
+
+test("shutdown rejects later window creation and bootstrap presentation", async () => {
+  const count = createdBrowserWindows.length;
+  const manager = Object.assign(Object.create(WindowManager.prototype), { isQuitting: true });
+  await manager.createMainWindow();
+  await manager.createControlPanelWindow();
+  manager._showControlPanel();
+  assert.equal(createdBrowserWindows.length, count);
+});
+
+for (const visible of [false, true]) {
+  test(`renderer bootstrap retains the reset dictation visibility ${visible}`, () => {
+    const shown = [];
+    const manager = Object.assign(Object.create(WindowManager.prototype), {
+      _onboardingActive: true,
+      _floatingIconAutoHide: false,
+      _sessionMainWindowPresentation: { visible, focused: false },
+      endOnboardingDemo() {},
+      sendCancelDictation() {},
+      hideDictationPanel() {},
+      showDictationPanel: (options) => shown.push(options),
+    });
+    manager.setOnboardingActive(false);
+    assert.deepEqual(shown, visible ? [{ focus: false }] : []);
+  });
+}
 Module._load = originalLoad;
 
 function fakeWindow({ visible }) {
@@ -253,7 +321,7 @@ test("assistant panel links open in the browser, never an in-app window or a loc
   opened.length = 0;
   let prevented = 0;
   const event = { preventDefault: () => (prevented += 1) };
-  listeners.get("will-navigate")(event, "file:///app/index.html?panel=false");
+  listeners.get("will-navigate")(event, `${pathToFileURL("/app/index.html").href}?panel=false`);
   listeners.get("will-navigate")(event, "https://attacker.example/");
   listeners.get("will-navigate")(event, "file:///C:/Windows/System32/cmd.exe");
   assert.equal(prevented, 2, "only the app's own reload may navigate the window");

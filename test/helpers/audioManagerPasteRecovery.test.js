@@ -50,6 +50,7 @@ test("safePaste preserves exact final text only for confirmed permission recover
       title: "Paste Error",
       code: "PASTE_FAILED",
       description: "accessibility in an unrelated error",
+      transcript: text,
     },
   ]);
 
@@ -67,4 +68,52 @@ test("safePaste preserves exact final text only for confirmed permission recover
   };
   await manager.safePaste(text);
   assert.equal(errors[1].description, "bad input");
+});
+
+test("successful inference waits for delivery and never saves a delivery rejection as failed ASR", async (t) => {
+  const { createManager } = await loadAudioManager(t, {
+    cachePrefix: "openwhispr-delivery-lifetime-",
+    settingsKey: "__deliveryLifetimeSettings",
+    mockModules: {
+      "/services/nimiRecording":
+        'export async function transcribeNimiRecording() { return { transcript: { text: "raw fixture" }, chunks: [] }; }',
+    },
+  });
+  let entered, finish;
+  const enteredPromise = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const pending = new Promise((_resolve, reject) => {
+    finish = reject;
+  });
+  const errors = [],
+    failed = [];
+  const manager = createManager({
+    isProcessing: true,
+    getEffectiveSttLanguage: () => "zh",
+    getCustomDictionaryPrompt: () => "",
+    processTranscriptionWithNimi: async () => "final fixture",
+    _takePendingResultExtras: () => ({}),
+    onTranscriptionComplete: async (result) => {
+      assert.equal(result.text, "final fixture");
+      entered();
+      await pending;
+    },
+    onError: (error) => errors.push(error),
+    saveFailedTranscription: (error) => failed.push(error),
+  });
+  let settled = false;
+  const work = manager.processAudio(new Blob(["audio fixture"], { type: "audio/wav" })).then(() => {
+    settled = true;
+  });
+  await enteredPromise;
+  assert.equal(manager.isProcessing, true);
+  assert.equal(settled, false);
+  finish(new Error("delivery rejected"));
+  await work;
+  assert.equal(manager.isProcessing, false);
+  assert.deepEqual(failed, []);
+  assert.deepEqual(errors, [
+    { title: "Paste Error", code: "PASTE_FAILED", transcript: "final fixture" },
+  ]);
 });

@@ -9,7 +9,8 @@ const speakerModulePath = require.resolve("../../src/helpers/speakerEmbeddings")
 const originalLoad = Module._load;
 Module._load = function loadWithMocks(request, parent, isMain) {
   if (request === "electron") return { app: { getPath: () => os.tmpdir(), isPackaged: false } };
-  if (parent?.filename === speakerModulePath && request === "./onnxWorkerClient") return {};
+  if (parent?.filename === speakerModulePath && request === "./tokenStore")
+    return { getGeneration: () => 0, subscribe() {} };
   return originalLoad.call(this, request, parent, isMain);
 };
 const speakerEmbeddings = require(speakerModulePath);
@@ -61,9 +62,14 @@ let wavPath;
 
 test.before(() => {
   wavPath = writeWav([0.25, 0.5]);
-  speakerEmbeddings._extractEmbeddingFromSamples = async (samples) => {
+  speakerEmbeddings._extractAudio = async (wav) => {
+    const pcm = wav.subarray(44);
+    const samples = Float32Array.from(
+      { length: pcm.length / 2 },
+      (_, i) => pcm.readInt16LE(i * 2) / 32768
+    );
     extracted.push(samples);
-    return new Float32Array(512).fill(samples[0]);
+    return { vector: [samples[0], 1], spaceId: "declared-fixture-space" };
   };
 });
 
@@ -83,8 +89,8 @@ test("each cluster's voice comes from its three longest segments of 1.5 s or mor
     extracted.map((samples) => samples.length / SAMPLE_RATE),
     [4, 2.5, 2, 2]
   );
-  assert.ok(Math.abs(centroids.get("speaker_a")[0] - 0.25) < 1e-4);
-  assert.ok(Math.abs(centroids.get("speaker_b")[0] - 0.5) < 1e-4);
+  assert.ok(Math.abs(centroids.get("speaker_a").vector[0] - 0.25) < 1e-4);
+  assert.ok(Math.abs(centroids.get("speaker_b").vector[0] - 0.5) < 1e-4);
 });
 
 test("only the audio each voice uses is read, never the whole WAV", async () => {
@@ -123,7 +129,7 @@ test("only the audio each voice uses is read, never the whole WAV", async () => 
   assert.equal(openFiles, 0);
   // The header, then one window per embedded segment.
   assert.deepEqual(
-    reads.slice(1).map((bytes) => bytes / (SAMPLE_RATE * 2)),
+    reads.filter((bytes) => bytes >= SAMPLE_RATE * 2).map((bytes) => bytes / (SAMPLE_RATE * 2)),
     [4, 2.5, 2, 2]
   );
 });
@@ -140,33 +146,38 @@ test("a segment longer than 8 s is embedded from its last 8 s", async () => {
 });
 
 test("a cluster whose voice fails leaves the other clusters' voices intact", async () => {
-  const workingExtract = speakerEmbeddings._extractEmbeddingFromSamples;
-  speakerEmbeddings._extractEmbeddingFromSamples = async (samples) => {
-    if (Math.abs(samples[0] - 0.25) < 1e-4) throw new Error("onnx worker request timeout");
-    return workingExtract(samples);
+  const workingExtract = speakerEmbeddings._extractAudio;
+  speakerEmbeddings._extractAudio = async (wav) => {
+    const pcm = wav.subarray(44);
+    const samples = Float32Array.from(
+      { length: pcm.length / 2 },
+      (_, i) => pcm.readInt16LE(i * 2) / 32768
+    );
+    if (Math.abs(samples[0] - 0.25) < 1e-4) throw new Error("declared fixture Runtime failure");
+    return workingExtract(wav);
   };
   try {
     const centroids = await speakerEmbeddings.extractClusterCentroids(wavPath, segments);
     assert.deepEqual([...centroids.keys()], ["speaker_b"]);
   } finally {
-    speakerEmbeddings._extractEmbeddingFromSamples = workingExtract;
+    speakerEmbeddings._extractAudio = workingExtract;
   }
 });
 
 test("a cancel between clusters stops before the next cluster", async () => {
   const controller = new AbortController();
-  const workingExtract = speakerEmbeddings._extractEmbeddingFromSamples;
-  speakerEmbeddings._extractEmbeddingFromSamples = async (samples) => {
+  const workingExtract = speakerEmbeddings._extractAudio;
+  speakerEmbeddings._extractAudio = async (wav) => {
     controller.abort();
-    return workingExtract(samples);
+    return workingExtract(wav);
   };
   try {
-    const centroids = await speakerEmbeddings.extractClusterCentroids(wavPath, segments, {
-      signal: controller.signal,
-    });
-    assert.deepEqual([...centroids.keys()], ["speaker_a"]);
+    await assert.rejects(
+      speakerEmbeddings.extractClusterCentroids(wavPath, segments, { signal: controller.signal }),
+      { name: "AbortError" }
+    );
   } finally {
-    speakerEmbeddings._extractEmbeddingFromSamples = workingExtract;
+    speakerEmbeddings._extractAudio = workingExtract;
   }
 });
 
@@ -174,10 +185,9 @@ test("a cancelled upload stops before extracting voices", async () => {
   const controller = new AbortController();
   controller.abort();
 
-  const centroids = await speakerEmbeddings.extractClusterCentroids(wavPath, segments, {
-    signal: controller.signal,
-  });
-
-  assert.equal(centroids.size, 0);
+  await assert.rejects(
+    speakerEmbeddings.extractClusterCentroids(wavPath, segments, { signal: controller.signal }),
+    { name: "AbortError" }
+  );
   assert.equal(extracted.length, 0);
 });

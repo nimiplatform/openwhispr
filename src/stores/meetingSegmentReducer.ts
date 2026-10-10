@@ -1,5 +1,6 @@
 import type { TranscriptSegment } from "./meetingRecordingStore";
 import { normalizeTranscriptSegment } from "../utils/transcriptSpeakerState";
+import { compareTranscriptSegments } from "../utils/transcriptMedia.mjs";
 
 /**
  * State transition for live meeting segment events (partial / final / retract)
@@ -14,6 +15,18 @@ export interface MeetingSegmentEvent {
   source: "mic" | "system";
   type: "partial" | "final" | "retract";
   timestamp?: number;
+  endTimestamp?: number;
+  id?: string;
+  sessionId?: string;
+  clockBasis?: TranscriptSegment["clockBasis"];
+  recognition?: TranscriptSegment["recognition"];
+  speaker?: string;
+  speakerMatching?: string;
+  speakerName?: string;
+  speakerStatus?: TranscriptSegment["speakerStatus"];
+  speakerIsPlaceholder?: boolean;
+  suggestedName?: string;
+  suggestedProfileId?: number;
 }
 
 export interface MeetingSegmentState {
@@ -34,16 +47,14 @@ export type MeetingSegmentReduction =
   | { kind: "partial"; state: MeetingSegmentState; source: "mic" | "system" }
   | { kind: "final"; state: MeetingSegmentState; inserted: TranscriptSegment; index: number };
 
-// Live finals are inserted by capture timestamp. An incoming final without a
-// timestamp goes to the end (`?? Infinity`); an existing row without one sorts
-// as 0. Strict `>` keeps equal timestamps in arrival order.
+// Uploaded source alignment stays before later captures. Within a capture
+// clock, equal or unknown times retain arrival order.
 export function insertSegmentByTimestamp(
   segments: TranscriptSegment[],
   seg: TranscriptSegment
 ): { segments: TranscriptSegment[]; index: number } {
-  const ts = seg.timestamp ?? Infinity;
   let i = segments.length;
-  while (i > 0 && (segments[i - 1].timestamp ?? 0) > ts) i--;
+  while (i > 0 && compareTranscriptSegments(segments[i - 1], seg) > 0) i--;
   const next =
     i === segments.length
       ? [...segments, seg]
@@ -74,10 +85,20 @@ export function reduceMeetingSegmentEvent(
   }
 
   const raw = normalizeTranscriptSegment({
-    id: deps.mintSegmentId(),
+    id: event.id || deps.mintSegmentId(),
     text: event.text,
     source: event.source,
     timestamp: event.timestamp,
+    endTimestamp: event.endTimestamp,
+    clockBasis: event.clockBasis,
+    recognition: event.recognition,
+    speaker: event.speaker,
+    speakerMatching: event.speakerMatching,
+    speakerName: event.speakerName,
+    speakerStatus: event.speakerStatus,
+    speakerIsPlaceholder: event.speakerIsPlaceholder,
+    suggestedName: event.suggestedName,
+    suggestedProfileId: event.suggestedProfileId,
   });
   const inserted = deps.decorateFinal(raw);
   const { segments, index } = insertSegmentByTimestamp(state.segments, inserted);

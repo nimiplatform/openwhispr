@@ -732,7 +732,7 @@ test("getWinTarget returns the hex HWND a win32 probe captured (#859)", async ()
       process.nextTick(() => {
         probe.stdout.emit(
           "data",
-          "TARGET 00001A2B\nWINDOW_CLASS Chrome_WidgetWin_1\nIS_TERMINAL false\n"
+          "TARGET 00001A2B\nTARGET_PID 42\nTARGET_STARTED 123456\nWINDOW_CLASS Chrome_WidgetWin_1\nIS_TERMINAL false\n"
         );
         probe.emit("close", 0);
       });
@@ -752,6 +752,8 @@ test("getWinTarget returns the hex HWND a win32 probe captured (#859)", async ()
     { command: "/tmp/windows-fast-paste.exe", args: ["--detect-only"] },
   ]);
   assert.equal((await manager.getWinTarget())?.id, "00001A2B");
+  assert.equal((await manager.getWinTarget())?.processId, 42);
+  assert.equal((await manager.getWinTarget())?.processStarted, "123456");
 });
 
 // captureTarget() nulls lastTarget while its probe runs; a paste racing the

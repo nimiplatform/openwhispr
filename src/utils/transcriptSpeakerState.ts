@@ -195,8 +195,13 @@ export const serializeTranscriptSegments = (segments: TranscriptSegment[]) =>
     segments.map((segment) => ({
       text: segment.text,
       source: segment.source,
+      id: segment.id,
       timestamp: segment.timestamp,
+      endTimestamp: segment.endTimestamp,
+      clockBasis: segment.clockBasis,
+      recognition: segment.recognition,
       speaker: segment.speaker,
+      speakerMatching: segment.speakerMatching,
       speakerName: segment.speakerName,
       speakerIsPlaceholder: segment.speakerIsPlaceholder,
       suggestedName: segment.suggestedName,

@@ -1,6 +1,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+test("live append cannot insert capture words inside a long upload's source clock", async () => {
+  const { insertSegmentByTimestamp } = await load();
+  const { imported, recorded } = require("../lib/mixedTranscriptFixture")();
+  const first = insertSegmentByTimestamp(imported, recorded[1]).segments;
+  assert.deepEqual(insertSegmentByTimestamp(first, recorded[0]).segments, [
+    ...imported,
+    ...recorded,
+  ]);
+});
+
 const load = () => import("../../src/stores/meetingSegmentReducer.ts");
 
 const seg = (overrides) => ({ id: "x", text: "t", source: "mic", ...overrides });
@@ -9,6 +19,41 @@ const deps = (overrides) => ({
   mintSegmentId: () => "seg-1",
   decorateFinal: (s) => s,
   ...overrides,
+});
+
+test("original renderer event retains Nimi voice fields, raw intervals and unconfirmed state through serialization", async () => {
+  const { reduceMeetingSegmentEvent } = await load();
+  const { serializeTranscriptSegments } = await import("../../src/utils/transcriptSpeakerState.ts");
+  const { parseTranscriptSegments } = await import("../../src/utils/parseTranscriptSegments.ts");
+  const event = {
+    type: "final",
+    id: "scope:mic:0:0",
+    source: "mic",
+    text: "真实文本",
+    timestamp: 1200,
+    endTimestamp: 1800,
+    speaker: "scope:job:speaker_1",
+    speakerMatching: "count-constrained",
+    speakerStatus: "provisional",
+    recognition: {
+      transcript: {
+        status: "transcribed",
+        text: "真实文本",
+        words: [],
+        diarization: {
+          status: "diarized",
+          durationSeconds: 2,
+          intervals: [{ speakerId: "speaker_1", startSeconds: 0.2, endSeconds: 0.8 }],
+        },
+      },
+    },
+  };
+  const result = reduceMeetingSegmentEvent(state(), event, deps());
+  const [saved] = parseTranscriptSegments(serializeTranscriptSegments(result.state.segments));
+  assert.equal(saved.speaker, event.speaker);
+  assert.equal(saved.speakerMatching, "count-constrained");
+  assert.equal(saved.speakerStatus, "provisional");
+  assert.deepEqual(saved.recognition, event.recognition);
 });
 
 test("retract removes only rows matching source+timestamp+text exactly, and reports them", async () => {

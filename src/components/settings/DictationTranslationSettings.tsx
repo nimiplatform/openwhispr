@@ -8,7 +8,7 @@ import { Toggle } from "../ui/toggle";
 import { SettingsPanel, SettingsPanelRow, SettingsRow, SectionHeader } from "../ui/SettingsSection";
 import PromptStudio from "../ui/PromptStudio";
 import LanguageSelector from "../ui/LanguageSelector";
-import InferenceConfigEditor from "./InferenceConfigEditor";
+import NimiAISettings from "./NimiAISettings";
 
 const TARGET_OPTIONS = registry.languages
   .filter((l) => l.code !== "auto")
@@ -145,7 +145,7 @@ export default function DictationTranslationSettings() {
             </p>
           )}
 
-          <InferenceConfigEditor scope="dictationTranslation" />
+          <NimiAISettings initialCapability="text.generate" />
 
           <div className="border-t border-border/70 pt-6">
             <SectionHeader

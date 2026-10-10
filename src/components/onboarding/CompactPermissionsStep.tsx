@@ -39,6 +39,7 @@ interface CompactPermissionsStepProps {
   /** Omitted when there is no step to return to. */
   onBack?: () => void;
   onContinue: () => void;
+  onDeferMicrophone?: () => void;
 }
 
 interface PermissionRowProps {
@@ -128,6 +129,7 @@ export default function CompactPermissionsStep({
   screenContext,
   onBack,
   onContinue,
+  onDeferMicrophone,
 }: CompactPermissionsStepProps) {
   const { t } = useTranslation();
   const [busyPermission, setBusyPermission] = useState<PermissionGuideId | null>(null);
@@ -285,6 +287,11 @@ export default function CompactPermissionsStep({
             {t("common.continue")}
           </Button>
         </div>
+        {!requiredGranted && onDeferMicrophone && (
+          <Button variant="ghost" onClick={onDeferMicrophone} className="mt-3 w-full">
+            {t("nimi.deferMicrophone")}
+          </Button>
+        )}
       </div>
     </CompactOnboardingFrame>
   );

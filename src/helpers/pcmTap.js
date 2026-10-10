@@ -28,6 +28,7 @@ export class PcmTap {
     this._node = null;
     this._source = null;
     this._flushResolve = null;
+    this.onPcm = null;
     this._context = new AudioContext({ sampleRate: SAMPLE_RATE });
     // Not awaited: resume() can hang when the output device is wedged.
     if (this._context.state === "suspended") this._context.resume().catch(() => {});
@@ -41,6 +42,9 @@ export class PcmTap {
           channelCountMode: "explicit",
         });
         this._node.port.onmessage = (event) => this._onMessage(event.data);
+        // Keep the capture graph rendering. The processor emits silent output,
+        // so microphone samples are never played through the speakers.
+        this._node.connect(this._context.destination);
         this._source?.connect(this._node);
       })
       .catch(() => {
@@ -53,8 +57,13 @@ export class PcmTap {
       this._flushResolve?.();
       return;
     }
-    if (this._dropped) return;
     const chunk = new Int16Array(data);
+    try {
+      this.onPcm?.(chunk);
+    } catch {
+      this.onPcm = null;
+    }
+    if (this._dropped) return;
     this._samples += chunk.length;
     if (this._samples > this._maxSamples) {
       this._dropped = true;
@@ -65,6 +74,10 @@ export class PcmTap {
   }
 
   // Feeds the recorder's stream, or moves the tap onto a replacement mic.
+  capturedPcm() {
+    return [...this._chunks];
+  }
+
   attach(stream) {
     this._source?.disconnect();
     this._source = this._context.createMediaStreamSource(stream);
@@ -106,6 +119,7 @@ export class PcmTap {
   }
 
   close() {
+    this.onPcm = null;
     this._chunks = [];
     this._samples = 0;
     this._node?.disconnect();

@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PermissionGuideId } from "../../types/permissionGuide";
 import {
-  LEGACY_ONBOARDING_STEP_KEY,
   ONBOARDING_SESSION_KEY,
   createOnboardingSession,
-  migrateLegacyOnboardingStep,
   parseOnboardingSession,
   type OnboardingAuthPath,
   type OnboardingSession,
@@ -18,20 +16,7 @@ function readInitialSession(): OnboardingSession {
   const stored = parseOnboardingSession(localStorage.getItem(ONBOARDING_SESSION_KEY));
   if (stored) return stored;
 
-  const session = createOnboardingSession();
-  session.currentStepId = migrateLegacyOnboardingStep(
-    localStorage.getItem(LEGACY_ONBOARDING_STEP_KEY)
-  );
-  if (localStorage.getItem("authenticationSkipped") === "true") {
-    session.authPath = "guest";
-  } else if (session.currentStepId !== "auth") {
-    // A legacy save mid-flow means the auth step was already behind the user.
-    // Left null, getOnboardingRoute returns ["auth"] and the reconcile clamp
-    // overwrites the migrated step before anything can restore it — the one
-    // group the legacy map exists for would always restart from scratch.
-    session.authPath = "account";
-  }
-  return session;
+  return createOnboardingSession();
 }
 
 export function useOnboardingSession() {
@@ -41,7 +26,6 @@ export function useOnboardingSession() {
     localStorage.setItem(ONBOARDING_SESSION_KEY, JSON.stringify(session));
     // AppRouter uses presence of this legacy key to distinguish an OAuth
     // callback from a returning user. Keep it until finalization is atomic.
-    localStorage.setItem(LEGACY_ONBOARDING_STEP_KEY, session.currentStepId);
   }, [session]);
 
   const goTo = useCallback((stepId: OnboardingStepId) => {
@@ -85,7 +69,6 @@ export function useOnboardingSession() {
 
   const clearSession = useCallback(() => {
     localStorage.removeItem(ONBOARDING_SESSION_KEY);
-    localStorage.removeItem(LEGACY_ONBOARDING_STEP_KEY);
   }, []);
 
   return {

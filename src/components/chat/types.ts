@@ -17,6 +17,7 @@ export interface MessageError {
 }
 
 export interface Message {
+  nimiTranscript?: import('ai').ModelMessage[];
   id: string;
   role: "user" | "assistant" | "tool";
   content: string;

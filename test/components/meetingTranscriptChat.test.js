@@ -88,3 +88,36 @@ test("live partials render alongside the settled rows", async () => {
   assert.ok(html.includes("still talking"));
   assert.ok(html.includes("hello from mic"));
 });
+
+const WORDS = ["明", "天", "上", "午", "10", "点", "开", "会"].map((text, i) => ({
+  id: `recording:system:0:${i}`,
+  text,
+  source: "system",
+  timestamp: 1000 + i * 100,
+  endTimestamp: 1100 + i * 100,
+  speaker: "speaker_0",
+}));
+
+test("aligned words render one readable, named row and one member-group checkbox", async () => {
+  const html = await renderChat({
+    segments: WORDS,
+    speakerMappings: { speaker_0: "Alice" },
+    selectedSegmentIds: new Set(WORDS.map((unit) => unit.id)),
+    onToggleSelect: () => {},
+  });
+  assert.ok(html.includes("明天上午10点开会"));
+  assert.ok(html.includes("Alice"));
+  assert.equal(html.split("data-index=").length - 1, 1);
+  assert.equal(html.split('role="checkbox"').length - 1, 1);
+  assert.ok(html.includes('aria-checked="true"'));
+});
+
+test("a partially selected utterance exposes mixed state rather than hiding selected members", async () => {
+  const html = await renderChat({
+    segments: WORDS,
+    selectedSegmentIds: new Set([WORDS[1].id]),
+    onToggleSelect: () => {},
+  });
+  assert.ok(html.includes('aria-checked="mixed"'));
+  assert.ok(html.includes('aria-label="明天上午10点开会"'));
+});

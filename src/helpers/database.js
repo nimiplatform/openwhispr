@@ -1,9 +1,11 @@
+const { getAppDataDirectory } = require("./appData");
 const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const { randomUUID } = require("crypto");
 const debugLogger = require("./debugLogger");
-const { buildNoteSearchQuery } = require("./noteSearch");
+const speakerVectors = require("./speakerRepresentation");
+const { buildNoteSearchQuery, noteKeywordText, noteTranscriptText } = require("./noteSearch");
 const { normalizeStoredSpeakerCount } = require("./speakerCount");
 const { parseEventTime } = require("./calendarAvailability");
 // An explicit zone marks an instant this app captured at dictation time. A
@@ -190,6 +192,8 @@ class DatabaseManager {
     this.db = null;
     this.activeAccountId = null;
     this.initDatabase();
+    this._ensureImportedMediaTables();
+    this._flushImportedMediaCleanup();
   }
 
   setActiveAccountId(accountId) {
@@ -281,9 +285,11 @@ class DatabaseManager {
       const dbFileName =
         process.env.NODE_ENV === "development" ? "transcriptions-dev.db" : "transcriptions.db";
 
-      const dbPath = path.join(app.getPath("userData"), dbFileName);
+      const dbPath = path.join(getAppDataDirectory(), dbFileName);
 
       this.db = new Database(dbPath);
+      this.db.function("note_keyword_text", { deterministic: true }, noteKeywordText);
+      this.db.function("note_transcript_text", { deterministic: true }, noteTranscriptText);
       this.db.pragma("journal_mode = WAL");
 
       this.db.exec(`
@@ -296,6 +302,11 @@ class DatabaseManager {
       `);
 
       // Audio retention columns
+      try {
+        this.db.exec("ALTER TABLE transcriptions ADD COLUMN recognition_result TEXT");
+      } catch (err) {
+        if (!err.message.includes("duplicate column")) throw err;
+      }
       try {
         this.db.exec("ALTER TABLE transcriptions ADD COLUMN raw_text TEXT");
       } catch (err) {
@@ -405,49 +416,6 @@ class DatabaseManager {
       } catch (err) {
         if (!err.message.includes("duplicate column")) throw err;
       }
-
-      this.db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-          title,
-          content,
-          enhanced_content,
-          content='notes',
-          content_rowid='id'
-        )
-      `);
-
-      this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS notes_fts_insert AFTER INSERT ON notes BEGIN
-          INSERT INTO notes_fts(rowid, title, content, enhanced_content)
-          VALUES (new.id, new.title, new.content, new.enhanced_content);
-        END
-      `);
-
-      this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS notes_fts_update AFTER UPDATE ON notes BEGIN
-          INSERT INTO notes_fts(notes_fts, rowid, title, content, enhanced_content)
-          VALUES ('delete', old.id, old.title, old.content, old.enhanced_content);
-          INSERT INTO notes_fts(rowid, title, content, enhanced_content)
-          VALUES (new.id, new.title, new.content, new.enhanced_content);
-        END
-      `);
-
-      this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS notes_fts_delete AFTER DELETE ON notes BEGIN
-          INSERT INTO notes_fts(notes_fts, rowid, title, content, enhanced_content)
-          VALUES ('delete', old.id, old.title, old.content, old.enhanced_content);
-        END
-      `);
-
-      this.db
-        .prepare(
-          `
-        INSERT OR IGNORE INTO notes_fts(rowid, title, content, enhanced_content)
-        SELECT id, COALESCE(title, ''), COALESCE(content, ''), COALESCE(enhanced_content, '')
-        FROM notes
-      `
-        )
-        .run();
 
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS folders (
@@ -1011,6 +979,26 @@ class DatabaseManager {
         )
       `);
 
+      // Device-owned people keep separate actual representations per model
+      // space. Historical unmarked BLOBs stay untouched and are not migrated.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS speaker_profile_representations (
+          profile_id INTEGER NOT NULL,
+          space_id TEXT NOT NULL,
+          representation TEXT NOT NULL,
+          sample_count INTEGER NOT NULL,
+          PRIMARY KEY (profile_id, space_id),
+          FOREIGN KEY (profile_id) REFERENCES speaker_profiles(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS note_speaker_representations (
+          note_id INTEGER NOT NULL,
+          speaker_id TEXT NOT NULL,
+          representation TEXT NOT NULL,
+          PRIMARY KEY (note_id, speaker_id),
+          FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+        );
+      `);
+
       // A cloud folder delete is optimistic until the API answers. Keep the
       // exact pre-delete row state in a durable journal so a permission denial
       // can revive the same folder, notes, speakers, and conversations even
@@ -1494,6 +1482,7 @@ class DatabaseManager {
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
+      this._initNoteSearchIndex();
       this._initVectorChangeJournal();
 
       return true;
@@ -1513,6 +1502,7 @@ class DatabaseManager {
       routeKind = null,
       clientTranscriptionId = randomUUID(),
       analyticsOccurredAt = null,
+      recognition = null,
     } = {}
   ) {
     try {
@@ -1530,8 +1520,8 @@ class DatabaseManager {
       const stmt = this.db.prepare(
         `INSERT INTO transcriptions (
            text, raw_text, status, error_message, error_code, route_kind,
-           client_transcription_id, timestamp
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))`
+           client_transcription_id, timestamp, recognition_result
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)`
       );
       const result = stmt.run(
         text,
@@ -1541,7 +1531,8 @@ class DatabaseManager {
         errorCode,
         routeKind,
         clientTranscriptionId,
-        occurredAt
+        occurredAt,
+        recognition ? JSON.stringify(recognition) : null
       );
 
       const fetchStmt = this.db.prepare("SELECT * FROM transcriptions WHERE id = ?");
@@ -2997,6 +2988,126 @@ class DatabaseManager {
     }
   }
 
+  _ensureImportedMediaTables() {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS note_import_media (
+      note_id INTEGER PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
+      metadata TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS import_media_cleanup (
+      id INTEGER PRIMARY KEY, metadata TEXT NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS retire_import_media BEFORE DELETE ON notes BEGIN
+      INSERT INTO import_media_cleanup(metadata) SELECT metadata FROM note_import_media WHERE note_id = OLD.id;
+      DELETE FROM note_import_media WHERE note_id = OLD.id;
+    END;`);
+  }
+
+  _flushImportedMediaCleanup() {
+    if (!this.db || this.db.inTransaction) return;
+    const imports = path.resolve(getAppDataDirectory(), "imports");
+    for (const row of this.db.prepare("SELECT id, metadata FROM import_media_cleanup").all()) {
+      try {
+        const media = JSON.parse(row.metadata);
+        const directories = new Set();
+        for (const pair of [media, ...(media.recordings || [])]) {
+          const original = path.resolve(getAppDataDirectory(), pair.originalPath);
+          const audio = path.resolve(getAppDataDirectory(), pair.audioPath);
+          const directory = path.dirname(original);
+          if (
+            !directory.startsWith(imports + path.sep) ||
+            path.dirname(audio) !== directory ||
+            !/^[0-9a-f-]{36}$/i.test(path.basename(directory))
+          )
+            throw new Error("Invalid retired note media path");
+          directories.add(directory);
+        }
+        for (const directory of directories)
+          require("node:fs").rmSync(directory, { recursive: true, force: true });
+        this.db.prepare("DELETE FROM import_media_cleanup WHERE id = ?").run(row.id);
+      } catch (error) {
+        debugLogger.warn("Imported media cleanup deferred", { error: error.message });
+      }
+    }
+  }
+
+  saveImportedNote(input) {
+    return this.db.transaction(() => {
+      const saved = this.saveNote(
+        input.title,
+        input.content,
+        "upload",
+        input.sourceFile,
+        input.audioDuration,
+        input.folderId,
+        input.spaceId
+      );
+      if (!saved.success || !saved.note) throw new Error("Imported note was not saved");
+      const segments = input.speakerRepresentations
+        ? require("./nimiSpeakerProfiles").labelSpeakerProfiles(
+            JSON.parse(input.transcript),
+            input.speakerRepresentations,
+            this.getSpeakerProfiles(true)
+          )
+        : null;
+      const updated = this.updateNote(saved.note.id, {
+        transcript: segments ? JSON.stringify(segments) : input.transcript,
+      });
+      if (!updated.success) throw new Error(updated.error || "Imported alignment was not saved");
+      if (input.speakerRepresentations)
+        this.saveNoteSpeakerEmbeddings(saved.note.id, input.speakerRepresentations);
+      this.db
+        .prepare("INSERT INTO note_import_media (note_id, metadata) VALUES (?, ?)")
+        .run(saved.note.id, JSON.stringify(input.sourceMedia));
+      return { success: true, note: { ...updated.note, source_media: input.sourceMedia } };
+    })();
+  }
+
+  saveMeetingNoteResult(noteId, segments, recording = null, speakerRepresentations = null) {
+    return this.db.transaction(() => {
+      const note = this.getNote(noteId);
+      if (!note || note.deleted_at) throw new Error("The recording note is unavailable");
+      if (speakerRepresentations) this.saveNoteSpeakerEmbeddings(noteId, speakerRepresentations);
+      let prior = [];
+      if (note.transcript?.startsWith("[")) prior = JSON.parse(note.transcript);
+      if (!Array.isArray(prior)) throw new Error("Invalid stored meeting transcript");
+      const byId = new Map(
+        prior.filter((segment) => segment.id).map((segment) => [segment.id, segment])
+      );
+      const merged = [...prior];
+      const labeled = require("./nimiSpeakerProfiles").labelSpeakerProfiles(
+        segments,
+        speakerRepresentations || {},
+        this.getSpeakerProfiles(true),
+        this.getSpeakerMappings(noteId)
+      );
+      for (const segment of labeled)
+        if (!byId.has(segment.id)) {
+          merged.push(segment);
+          byId.set(segment.id, segment);
+        }
+      merged.sort(require("../utils/transcriptMedia.mjs").compareTranscriptSegments);
+      const updated = this.updateNote(noteId, { transcript: JSON.stringify(merged) });
+      if (!updated.success) throw new Error(updated.error || "Meeting output was not saved");
+      if (recording) {
+        const media = note.source_media || {
+          originalPath: recording.originalPath,
+          audioPath: recording.audioPath,
+        };
+        const recordings = [...(media.recordings || [])];
+        const index = recordings.findIndex((item) => item.sessionId === recording.sessionId);
+        if (index < 0) recordings.push(recording);
+        else recordings[index] = recording;
+        media.recordings = recordings;
+        this.db
+          .prepare(
+            "INSERT INTO note_import_media (note_id, metadata) VALUES (?, ?) ON CONFLICT(note_id) DO UPDATE SET metadata = excluded.metadata"
+          )
+          .run(noteId, JSON.stringify(media));
+      }
+      return { success: true, note: this.getNote(noteId) };
+    })();
+  }
+
   saveNote(
     title,
     content,
@@ -3159,7 +3270,19 @@ class DatabaseManager {
       }
       const accountScope = this._accountScopeCondition("notes");
       const stmt = this.db.prepare(`SELECT * FROM notes WHERE id = ? AND ${accountScope.sql}`);
-      return stmt.get(id, ...accountScope.params) || null;
+      const note = stmt.get(id, ...accountScope.params) || null;
+      if (
+        note &&
+        this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='note_import_media'")
+          .get()
+      ) {
+        const source = this.db
+          .prepare("SELECT metadata FROM note_import_media WHERE note_id = ?")
+          .get(id);
+        if (source) note.source_media = JSON.parse(source.metadata);
+      }
+      return note;
     } catch (error) {
       debugLogger.error("Error getting note", { error: error.message }, "notes");
       throw error;
@@ -3433,228 +3556,241 @@ class DatabaseManager {
   }
 
   deleteAccountData(accountId) {
-    if (!this.db) throw new Error("Database not initialized");
-    if (!accountId || accountId !== this.activeAccountId) {
-      throw new Error("Account deletion must match the active account scope");
-    }
+    try {
+      if (!this.db) throw new Error("Database not initialized");
+      if (!accountId || accountId !== this.activeAccountId) {
+        throw new Error("Account deletion must match the active account scope");
+      }
 
-    const deletedNoteIds = this.db
-      .prepare(
-        `SELECT notes.id
+      const deletedNoteIds = this.db
+        .prepare(
+          `SELECT notes.id
          FROM notes
          JOIN spaces ON spaces.id = notes.space_id
          WHERE notes.account_id = ? AND spaces.kind = 'private'
          ORDER BY notes.id`
-      )
-      .all(accountId)
-      .map((row) => row.id);
-    const deletedFolderIds = this.db
-      .prepare(
-        `SELECT folders.id
+        )
+        .all(accountId)
+        .map((row) => row.id);
+      const deletedFolderIds = this.db
+        .prepare(
+          `SELECT folders.id
          FROM folders
          JOIN spaces ON spaces.id = folders.space_id
          WHERE folders.account_id = ? AND spaces.kind = 'private'
          ORDER BY folders.id`
-      )
-      .all(accountId)
-      .map((row) => row.id);
+        )
+        .all(accountId)
+        .map((row) => row.id);
 
-    const notePlaceholders = deletedNoteIds.map(() => "?").join(", ");
-    const folderPlaceholders = deletedFolderIds.map(() => "?").join(", ");
-    const deleteRows = () => {
-      const conversationConditions = [];
-      const conversationParams = [];
-      if (deletedNoteIds.length > 0) {
-        conversationConditions.push(`note_id IN (${notePlaceholders})`);
-        conversationParams.push(...deletedNoteIds);
-      }
-      if (deletedFolderIds.length > 0) {
-        conversationConditions.push(`folder_id IN (${folderPlaceholders})`);
-        conversationParams.push(...deletedFolderIds);
-      }
-      if (conversationConditions.length > 0) {
-        const conversationIds = this.db
-          .prepare(
-            `SELECT id FROM agent_conversations WHERE ${conversationConditions.join(" OR ")}`
-          )
-          .all(...conversationParams)
-          .map((row) => row.id);
-        if (conversationIds.length > 0) {
-          const conversationPlaceholders = conversationIds.map(() => "?").join(", ");
+      const notePlaceholders = deletedNoteIds.map(() => "?").join(", ");
+      const folderPlaceholders = deletedFolderIds.map(() => "?").join(", ");
+      const deleteRows = () => {
+        const conversationConditions = [];
+        const conversationParams = [];
+        if (deletedNoteIds.length > 0) {
+          conversationConditions.push(`note_id IN (${notePlaceholders})`);
+          conversationParams.push(...deletedNoteIds);
+        }
+        if (deletedFolderIds.length > 0) {
+          conversationConditions.push(`folder_id IN (${folderPlaceholders})`);
+          conversationParams.push(...deletedFolderIds);
+        }
+        if (conversationConditions.length > 0) {
+          const conversationIds = this.db
+            .prepare(
+              `SELECT id FROM agent_conversations WHERE ${conversationConditions.join(" OR ")}`
+            )
+            .all(...conversationParams)
+            .map((row) => row.id);
+          if (conversationIds.length > 0) {
+            const conversationPlaceholders = conversationIds.map(() => "?").join(", ");
+            this.db
+              .prepare(
+                `DELETE FROM agent_messages WHERE conversation_id IN (${conversationPlaceholders})`
+              )
+              .run(...conversationIds);
+            this.db
+              .prepare(`DELETE FROM agent_conversations WHERE id IN (${conversationPlaceholders})`)
+              .run(...conversationIds);
+          }
+        }
+
+        if (deletedNoteIds.length > 0) {
+          this.db
+            .prepare(`DELETE FROM speaker_mappings WHERE note_id IN (${notePlaceholders})`)
+            .run(...deletedNoteIds);
+          this.db
+            .prepare(`DELETE FROM note_speaker_embeddings WHERE note_id IN (${notePlaceholders})`)
+            .run(...deletedNoteIds);
           this.db
             .prepare(
-              `DELETE FROM agent_messages WHERE conversation_id IN (${conversationPlaceholders})`
+              `DELETE FROM note_speaker_representations WHERE note_id IN (${notePlaceholders})`
             )
-            .run(...conversationIds);
+            .run(...deletedNoteIds);
           this.db
-            .prepare(`DELETE FROM agent_conversations WHERE id IN (${conversationPlaceholders})`)
-            .run(...conversationIds);
+            .prepare(`DELETE FROM notes WHERE id IN (${notePlaceholders})`)
+            .run(...deletedNoteIds);
+        }
+        if (deletedFolderIds.length > 0) {
+          this.db
+            .prepare(
+              `DELETE FROM optimistic_folder_delete_rows WHERE folder_id IN (${folderPlaceholders})`
+            )
+            .run(...deletedFolderIds);
+          this.db
+            .prepare(`DELETE FROM folders WHERE id IN (${folderPlaceholders})`)
+            .run(...deletedFolderIds);
+        }
+        this.db.prepare("DELETE FROM analytics_events WHERE account_id = ?").run(accountId);
+        this.db.prepare("DELETE FROM analytics_clear_requests WHERE account_id = ?").run(accountId);
+        this.db.prepare("DELETE FROM connector_actions WHERE account_id = ?").run(accountId);
+        this.db.prepare("DELETE FROM space_accounts WHERE account_id = ?").run(accountId);
+      };
+
+      if (typeof this.db.transaction === "function") {
+        this.db.transaction(deleteRows)();
+      } else {
+        this.db.exec("BEGIN");
+        try {
+          deleteRows();
+          this.db.exec("COMMIT");
+        } catch (error) {
+          this.db.exec("ROLLBACK");
+          throw error;
         }
       }
 
-      if (deletedNoteIds.length > 0) {
-        this.db
-          .prepare(`DELETE FROM speaker_mappings WHERE note_id IN (${notePlaceholders})`)
-          .run(...deletedNoteIds);
-        this.db
-          .prepare(`DELETE FROM note_speaker_embeddings WHERE note_id IN (${notePlaceholders})`)
-          .run(...deletedNoteIds);
-        this.db
-          .prepare(`DELETE FROM notes WHERE id IN (${notePlaceholders})`)
-          .run(...deletedNoteIds);
-      }
-      if (deletedFolderIds.length > 0) {
-        this.db
-          .prepare(
-            `DELETE FROM optimistic_folder_delete_rows WHERE folder_id IN (${folderPlaceholders})`
-          )
-          .run(...deletedFolderIds);
-        this.db
-          .prepare(`DELETE FROM folders WHERE id IN (${folderPlaceholders})`)
-          .run(...deletedFolderIds);
-      }
-      this.db.prepare("DELETE FROM analytics_events WHERE account_id = ?").run(accountId);
-      this.db.prepare("DELETE FROM analytics_clear_requests WHERE account_id = ?").run(accountId);
-      this.db.prepare("DELETE FROM connector_actions WHERE account_id = ?").run(accountId);
-      this.db.prepare("DELETE FROM space_accounts WHERE account_id = ?").run(accountId);
-    };
-
-    if (typeof this.db.transaction === "function") {
-      this.db.transaction(deleteRows)();
-    } else {
-      this.db.exec("BEGIN");
-      try {
-        deleteRows();
-        this.db.exec("COMMIT");
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
-      }
+      return { deletedNoteIds, deletedFolderIds };
+    } finally {
+      this._flushImportedMediaCleanup();
     }
-
-    return { deletedNoteIds, deletedFolderIds };
   }
 
   deleteFolder(id) {
     try {
-      if (!this.db) throw new Error("Database not initialized");
-      const folder = this._getFolderInAccountScope(id);
-      if (folder?.deleted_at) return { success: false, error: "Folder not found" };
-      if (!folder) return { success: false, error: "Folder not found" };
-      if (folder.is_default) return { success: false, error: "Cannot delete default folders" };
-      const allChildNotes = "SELECT id FROM notes WHERE folder_id = ?";
-      const childNotes = `${allChildNotes} AND deleted_at IS NULL`;
-      const accountScope = this._accountScopeCondition("notes");
-      const noteIds = this.db
-        .prepare(`${childNotes} AND ${accountScope.sql}`)
-        .all(id, ...accountScope.params)
-        .map((row) => row.id);
-      let relocatedNotes = [];
-      this.db.transaction(() => {
-        relocatedNotes = this._releaseOutOfScopeChildNotes(id);
-        if (!folder.cloud_id) {
-          // There is no server operation to deny. Local-only folders can
-          // finalize immediately, including their local-only child content.
-          this._retireConversationsWhere(`note_id IN (${allChildNotes})`, [id], {
-            scrubSyncedMessages: true,
-          });
-          this._deleteSpeakerRowsForNotes(allChildNotes, id);
-          this.db.prepare("DELETE FROM notes WHERE folder_id = ?").run(id);
-          this._retireConversationsWhere("folder_id = ?", [id], {
-            scrubSyncedMessages: true,
-          });
-          this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
-          return;
-        }
+      try {
+        if (!this.db) throw new Error("Database not initialized");
+        const folder = this._getFolderInAccountScope(id);
+        if (folder?.deleted_at) return { success: false, error: "Folder not found" };
+        if (!folder) return { success: false, error: "Folder not found" };
+        if (folder.is_default) return { success: false, error: "Cannot delete default folders" };
+        const allChildNotes = "SELECT id FROM notes WHERE folder_id = ?";
+        const childNotes = `${allChildNotes} AND deleted_at IS NULL`;
+        const accountScope = this._accountScopeCondition("notes");
+        const noteIds = this.db
+          .prepare(`${childNotes} AND ${accountScope.sql}`)
+          .all(id, ...accountScope.params)
+          .map((row) => row.id);
+        let relocatedNotes = [];
+        this.db.transaction(() => {
+          relocatedNotes = this._releaseOutOfScopeChildNotes(id);
+          if (!folder.cloud_id) {
+            // There is no server operation to deny. Local-only folders can
+            // finalize immediately, including their local-only child content.
+            this._retireConversationsWhere(`note_id IN (${allChildNotes})`, [id], {
+              scrubSyncedMessages: true,
+            });
+            this._deleteSpeakerRowsForNotes(allChildNotes, id);
+            this.db.prepare("DELETE FROM notes WHERE folder_id = ?").run(id);
+            this._retireConversationsWhere("folder_id = ?", [id], {
+              scrubSyncedMessages: true,
+            });
+            this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
+            return;
+          }
 
-        const journal = this.db.prepare(
-          `INSERT OR IGNORE INTO optimistic_folder_delete_rows
+          const journal = this.db.prepare(
+            `INSERT OR IGNORE INTO optimistic_folder_delete_rows
              (folder_id, entity_type, entity_id, original_sync_status,
               original_deleted_at, original_updated_at)
            VALUES (?, ?, ?, ?, ?, ?)`
-        );
-        journal.run(
-          id,
-          "folder",
-          id,
-          folder.sync_status ?? "synced",
-          folder.deleted_at ?? null,
-          folder.updated_at ?? null
-        );
-
-        const activeNotes = this.db.prepare(
-          "SELECT id, sync_status, deleted_at, updated_at FROM notes WHERE folder_id = ? AND deleted_at IS NULL"
-        );
-        for (const note of activeNotes.all(id)) {
+          );
           journal.run(
             id,
-            "note",
-            note.id,
-            note.sync_status ?? "pending",
-            note.deleted_at ?? null,
-            note.updated_at ?? null
+            "folder",
+            id,
+            folder.sync_status ?? "synced",
+            folder.deleted_at ?? null,
+            folder.updated_at ?? null
           );
-        }
 
-        // Only live conversations belong to this rollback. A tombstone that
-        // predates the folder action is an independent user-requested delete
-        // and must remain pending on both denial and confirmation.
-        const activeConversations = this.db
-          .prepare(
-            `SELECT id, sync_status, deleted_at, updated_at
+          const activeNotes = this.db.prepare(
+            "SELECT id, sync_status, deleted_at, updated_at FROM notes WHERE folder_id = ? AND deleted_at IS NULL"
+          );
+          for (const note of activeNotes.all(id)) {
+            journal.run(
+              id,
+              "note",
+              note.id,
+              note.sync_status ?? "pending",
+              note.deleted_at ?? null,
+              note.updated_at ?? null
+            );
+          }
+
+          // Only live conversations belong to this rollback. A tombstone that
+          // predates the folder action is an independent user-requested delete
+          // and must remain pending on both denial and confirmation.
+          const activeConversations = this.db
+            .prepare(
+              `SELECT id, sync_status, deleted_at, updated_at
              FROM agent_conversations
              WHERE deleted_at IS NULL
                AND (folder_id = ? OR note_id IN (${childNotes}))`
-          )
-          .all(id, id);
-        for (const conversation of activeConversations) {
-          journal.run(
-            id,
-            "conversation",
-            conversation.id,
-            conversation.sync_status ?? "pending",
-            conversation.deleted_at ?? null,
-            conversation.updated_at ?? null
-          );
-        }
+            )
+            .all(id, id);
+          for (const conversation of activeConversations) {
+            journal.run(
+              id,
+              "conversation",
+              conversation.id,
+              conversation.sync_status ?? "pending",
+              conversation.deleted_at ?? null,
+              conversation.updated_at ?? null
+            );
+          }
 
-        // Keep every child row and message body in place while hiding them
-        // from normal readers and all per-note/per-conversation sync queues.
-        this.db
-          .prepare(
-            `UPDATE notes
+          // Keep every child row and message body in place while hiding them
+          // from normal readers and all per-note/per-conversation sync queues.
+          this.db
+            .prepare(
+              `UPDATE notes
              SET deleted_at = datetime('now'), sync_status = 'folder_delete_pending',
                  updated_at = datetime('now')
              WHERE id IN (
                SELECT entity_id FROM optimistic_folder_delete_rows
                WHERE folder_id = ? AND entity_type = 'note'
              )`
-          )
-          .run(id);
-        this.db
-          .prepare(
-            `UPDATE agent_conversations
+            )
+            .run(id);
+          this.db
+            .prepare(
+              `UPDATE agent_conversations
              SET deleted_at = datetime('now'), sync_status = 'folder_delete_pending',
                  updated_at = datetime('now')
              WHERE id IN (
                SELECT entity_id FROM optimistic_folder_delete_rows
                WHERE folder_id = ? AND entity_type = 'conversation'
              )`
-          )
-          .run(id);
-        this.db
-          .prepare(
-            `UPDATE folders
+            )
+            .run(id);
+          this.db
+            .prepare(
+              `UPDATE folders
              SET deleted_at = datetime('now'), updated_at = datetime('now'),
                  sync_status = 'pending'
              WHERE id = ?`
-          )
-          .run(id);
-      })();
-      return { success: true, id, noteIds, relocatedNotes };
-    } catch (error) {
-      debugLogger.error("Error deleting folder", { error: error.message }, "notes");
-      throw error;
+            )
+            .run(id);
+        })();
+        return { success: true, id, noteIds, relocatedNotes };
+      } catch (error) {
+        debugLogger.error("Error deleting folder", { error: error.message }, "notes");
+        throw error;
+      }
+    } finally {
+      this._flushImportedMediaCleanup();
     }
   }
 
@@ -3977,6 +4113,9 @@ class DatabaseManager {
     this.db
       .prepare(`DELETE FROM note_speaker_embeddings WHERE note_id IN (${noteIdSubquery})`)
       .run(param);
+    this.db
+      .prepare(`DELETE FROM note_speaker_representations WHERE note_id IN (${noteIdSubquery})`)
+      .run(param);
   }
 
   // Conversations whose note or container is being removed must not survive
@@ -4022,147 +4161,192 @@ class DatabaseManager {
 
   purgeSpace(localSpaceId, options = {}) {
     try {
-      if (!this.db) throw new Error("Database not initialized");
-      const mode = options?.mode ?? "preserve-dirty";
-      if (mode !== "preserve-dirty" && mode !== "destructive") {
-        return { success: false, error: "Invalid purge mode" };
-      }
-      const destructive = mode === "destructive";
-      const space = this.getSpace(localSpaceId);
-      if (!space) return { success: false, error: "Space not found" };
-      if (space.kind === "private") {
-        return { success: false, error: "Cannot purge the private space" };
-      }
-      if (this._releaseActiveSpaceMembershipIfShared(localSpaceId)) {
-        return {
-          success: true,
-          noteIds: [],
-          folderNames: [],
-          spaceId: localSpaceId,
-          relocatedNotes: [],
-          relocatedCount: 0,
-          relocatedTitles: [],
-          preservedForOtherAccounts: true,
-        };
-      }
-      if (!destructive) {
-        // Space revocation supersedes any unresolved folder delete. Recover
-        // the held rows first so dirty/local-only children are classified by
-        // their real pre-delete state and can still relocate to Personal.
-        const heldFolderIds = this.db
-          .prepare(
-            `SELECT DISTINCT r.folder_id
+      try {
+        if (!this.db) throw new Error("Database not initialized");
+        const mode = options?.mode ?? "preserve-dirty";
+        if (mode !== "preserve-dirty" && mode !== "destructive") {
+          return { success: false, error: "Invalid purge mode" };
+        }
+        const destructive = mode === "destructive";
+        const space = this.getSpace(localSpaceId);
+        if (!space) return { success: false, error: "Space not found" };
+        if (space.kind === "private") {
+          return { success: false, error: "Cannot purge the private space" };
+        }
+        if (this._releaseActiveSpaceMembershipIfShared(localSpaceId)) {
+          return {
+            success: true,
+            noteIds: [],
+            folderNames: [],
+            spaceId: localSpaceId,
+            relocatedNotes: [],
+            relocatedCount: 0,
+            relocatedTitles: [],
+            preservedForOtherAccounts: true,
+          };
+        }
+        if (!destructive) {
+          // Space revocation supersedes any unresolved folder delete. Recover
+          // the held rows first so dirty/local-only children are classified by
+          // their real pre-delete state and can still relocate to Personal.
+          const heldFolderIds = this.db
+            .prepare(
+              `SELECT DISTINCT r.folder_id
              FROM optimistic_folder_delete_rows r
              JOIN folders f ON f.id = r.folder_id
              WHERE r.entity_type = 'folder' AND f.space_id = ?`
-          )
-          .all(localSpaceId)
-          .map((row) => row.folder_id);
-        for (const folderId of heldFolderIds) {
-          const rollback = this.restoreFolderAfterDeniedDelete(folderId);
-          if (!rollback.success) return rollback;
-        }
-      }
-      const privateSpaceId = this.getPrivateSpaceId();
-      const { noteIds, folderNames, relocatedNotes } = this.db.transaction(() => {
-        // Dirty or never-synced notes are the only surviving content (plan
-        // §7.2, matching relocateRevokedFolder): they move to the private
-        // space root with forked identities — the server row (if any) stays
-        // the team's, so the next push re-creates them as personal notes.
-        let relocated = [];
-        if (!destructive && privateSpaceId != null) {
-          const preservedIds = this.db
-            .prepare(
-              "SELECT id FROM notes WHERE space_id = ? AND deleted_at IS NULL AND (sync_status != 'synced' OR cloud_id IS NULL)"
             )
             .all(localSpaceId)
-            .map((row) => row.id);
-          if (preservedIds.length > 0) {
-            const relocateNote = this.db.prepare(
-              "UPDATE notes SET space_id = ?, folder_id = NULL, client_note_id = ?, cloud_id = NULL, cloud_updated_at = NULL, owner_user_id = NULL, updated_by_user_id = NULL, sync_status = 'pending', left_team = 0, is_shared = 0, share_token = NULL, updated_at = datetime('now') WHERE id = ?"
-            );
-            const detachNoteConversation = this.db.prepare(
-              "UPDATE agent_conversations SET space_id = NULL, folder_id = NULL WHERE note_id = ?"
-            );
-            for (const noteId of preservedIds) {
-              relocateNote.run(privateSpaceId, randomUUID(), noteId);
-              // A note chat follows the dirty note fork into Personal. Clear
-              // any redundant team-container scope so the container cleanup
-              // below cannot retire a conversation whose note survived.
-              detachNoteConversation.run(noteId);
-            }
-            const getNote = this.db.prepare("SELECT * FROM notes WHERE id = ?");
-            relocated = preservedIds.map((id) => getNote.get(id));
+            .map((row) => row.folder_id);
+          for (const folderId of heldFolderIds) {
+            const rollback = this.restoreFolderAfterDeniedDelete(folderId);
+            if (!rollback.success) return rollback;
           }
         }
-        const ids = this.db
-          .prepare("SELECT id FROM notes WHERE space_id = ?")
-          .all(localSpaceId)
-          .map((row) => row.id);
-        const names = this.db
-          .prepare("SELECT name FROM folders WHERE space_id = ?")
-          .all(localSpaceId)
-          .map((row) => row.name);
-        // Note chats normally carry only note_id, so container cleanup alone
-        // cannot see them. Retire them while the doomed note rows still
-        // identify the space; relocated dirty-note chats were moved above.
-        if (destructive) {
-          // Account-boundary cleanup must leave neither visible chats nor
-          // cloud-delete tombstones. Match note-only chats and both kinds of
-          // container scope before deleting their parent rows.
-          this._hardDeleteConversationsWhere(
-            `note_id IN (SELECT id FROM notes WHERE space_id = ?)
+        const privateSpaceId = this.getPrivateSpaceId();
+        const { noteIds, folderNames, relocatedNotes } = this.db.transaction(() => {
+          // Dirty or never-synced notes are the only surviving content (plan
+          // §7.2, matching relocateRevokedFolder): they move to the private
+          // space root with forked identities — the server row (if any) stays
+          // the team's, so the next push re-creates them as personal notes.
+          let relocated = [];
+          if (!destructive && privateSpaceId != null) {
+            const preservedIds = this.db
+              .prepare(
+                "SELECT id FROM notes WHERE space_id = ? AND deleted_at IS NULL AND (sync_status != 'synced' OR cloud_id IS NULL)"
+              )
+              .all(localSpaceId)
+              .map((row) => row.id);
+            if (preservedIds.length > 0) {
+              const relocateNote = this.db.prepare(
+                "UPDATE notes SET space_id = ?, folder_id = NULL, client_note_id = ?, cloud_id = NULL, cloud_updated_at = NULL, owner_user_id = NULL, updated_by_user_id = NULL, sync_status = 'pending', left_team = 0, is_shared = 0, share_token = NULL, updated_at = datetime('now') WHERE id = ?"
+              );
+              const detachNoteConversation = this.db.prepare(
+                "UPDATE agent_conversations SET space_id = NULL, folder_id = NULL WHERE note_id = ?"
+              );
+              for (const noteId of preservedIds) {
+                relocateNote.run(privateSpaceId, randomUUID(), noteId);
+                // A note chat follows the dirty note fork into Personal. Clear
+                // any redundant team-container scope so the container cleanup
+                // below cannot retire a conversation whose note survived.
+                detachNoteConversation.run(noteId);
+              }
+              const getNote = this.db.prepare("SELECT * FROM notes WHERE id = ?");
+              relocated = preservedIds.map((id) => getNote.get(id));
+            }
+          }
+          const ids = this.db
+            .prepare("SELECT id FROM notes WHERE space_id = ?")
+            .all(localSpaceId)
+            .map((row) => row.id);
+          const names = this.db
+            .prepare("SELECT name FROM folders WHERE space_id = ?")
+            .all(localSpaceId)
+            .map((row) => row.name);
+          // Note chats normally carry only note_id, so container cleanup alone
+          // cannot see them. Retire them while the doomed note rows still
+          // identify the space; relocated dirty-note chats were moved above.
+          if (destructive) {
+            // Account-boundary cleanup must leave neither visible chats nor
+            // cloud-delete tombstones. Match note-only chats and both kinds of
+            // container scope before deleting their parent rows.
+            this._hardDeleteConversationsWhere(
+              `note_id IN (SELECT id FROM notes WHERE space_id = ?)
              OR space_id = ?
              OR folder_id IN (SELECT id FROM folders WHERE space_id = ?)`,
-            [localSpaceId, localSpaceId, localSpaceId]
-          );
+              [localSpaceId, localSpaceId, localSpaceId]
+            );
+            this.db
+              .prepare(
+                `DELETE FROM optimistic_folder_delete_rows
+               WHERE folder_id IN (SELECT id FROM folders WHERE space_id = ?)`
+              )
+              .run(localSpaceId);
+          } else {
+            this._retireConversationsWhere(
+              "note_id IN (SELECT id FROM notes WHERE space_id = ?)",
+              [localSpaceId],
+              { scrubSyncedMessages: true }
+            );
+          }
+          this._deleteSpeakerRowsForNotes("SELECT id FROM notes WHERE space_id = ?", localSpaceId);
+          this.db.prepare("DELETE FROM notes WHERE space_id = ?").run(localSpaceId);
+          // Deleted-note tombstones in other spaces can still reference folders
+          // in this space (folder moved across spaces after the delete); clear
+          // the refs or the folder delete below aborts on the FK.
           this.db
             .prepare(
-              `DELETE FROM optimistic_folder_delete_rows
-               WHERE folder_id IN (SELECT id FROM folders WHERE space_id = ?)`
+              "UPDATE notes SET folder_id = NULL WHERE space_id != ? AND folder_id IN (SELECT id FROM folders WHERE space_id = ?)"
             )
-            .run(localSpaceId);
-        } else {
-          this._retireConversationsWhere(
-            "note_id IN (SELECT id FROM notes WHERE space_id = ?)",
-            [localSpaceId],
-            { scrubSyncedMessages: true }
-          );
-        }
-        this._deleteSpeakerRowsForNotes("SELECT id FROM notes WHERE space_id = ?", localSpaceId);
-        this.db.prepare("DELETE FROM notes WHERE space_id = ?").run(localSpaceId);
-        // Deleted-note tombstones in other spaces can still reference folders
-        // in this space (folder moved across spaces after the delete); clear
-        // the refs or the folder delete below aborts on the FK.
-        this.db
-          .prepare(
-            "UPDATE notes SET folder_id = NULL WHERE space_id != ? AND folder_id IN (SELECT id FROM folders WHERE space_id = ?)"
-          )
-          .run(localSpaceId, localSpaceId);
-        if (!destructive) {
-          this._retireConversationsWhere(
-            "space_id = ? OR folder_id IN (SELECT id FROM folders WHERE space_id = ?)",
-            [localSpaceId, localSpaceId],
-            { scrubSyncedMessages: true }
-          );
-        }
-        this.db.prepare("DELETE FROM folders WHERE space_id = ?").run(localSpaceId);
-        this.db.prepare("DELETE FROM spaces WHERE id = ?").run(localSpaceId);
-        return { noteIds: ids, folderNames: names, relocatedNotes: relocated };
-      })();
-      return {
-        success: true,
-        noteIds,
-        folderNames,
-        spaceId: localSpaceId,
-        relocatedNotes,
-        relocatedCount: relocatedNotes.length,
-        relocatedTitles: relocatedNotes.slice(0, 3).map((note) => note.title),
-      };
-    } catch (error) {
-      debugLogger.error("Error purging space", { error: error.message }, "spaces");
-      throw error;
+            .run(localSpaceId, localSpaceId);
+          if (!destructive) {
+            this._retireConversationsWhere(
+              "space_id = ? OR folder_id IN (SELECT id FROM folders WHERE space_id = ?)",
+              [localSpaceId, localSpaceId],
+              { scrubSyncedMessages: true }
+            );
+          }
+          this.db.prepare("DELETE FROM folders WHERE space_id = ?").run(localSpaceId);
+          this.db.prepare("DELETE FROM spaces WHERE id = ?").run(localSpaceId);
+          return { noteIds: ids, folderNames: names, relocatedNotes: relocated };
+        })();
+        return {
+          success: true,
+          noteIds,
+          folderNames,
+          spaceId: localSpaceId,
+          relocatedNotes,
+          relocatedCount: relocatedNotes.length,
+          relocatedTitles: relocatedNotes.slice(0, 3).map((note) => note.title),
+        };
+      } catch (error) {
+        debugLogger.error("Error purging space", { error: error.message }, "spaces");
+        throw error;
+      }
+    } finally {
+      this._flushImportedMediaCleanup();
     }
+  }
+
+  _initNoteSearchIndex() {
+    // Rebuild only the derived FTS cache. The external-content view uses the
+    // same projection as trigger inserts/deletes and FTS integrity/rebuild.
+    this.db.transaction(() => {
+      this.db.exec(`
+        DROP TRIGGER IF EXISTS notes_fts_insert;
+        DROP TRIGGER IF EXISTS notes_fts_update;
+        DROP TRIGGER IF EXISTS notes_fts_delete;
+        DROP TABLE IF EXISTS notes_fts;
+        DROP VIEW IF EXISTS note_search_content;
+        CREATE VIEW note_search_content AS SELECT id,
+          note_keyword_text(title) AS title,
+          note_keyword_text(content) AS content,
+          note_keyword_text(enhanced_content) AS enhanced_content,
+          note_keyword_text(note_transcript_text(transcript)) AS transcript_text
+          FROM notes;
+        CREATE VIRTUAL TABLE notes_fts USING fts5(title, content, enhanced_content,
+          transcript_text, content='note_search_content', content_rowid='id');
+        CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
+          INSERT INTO notes_fts(rowid, title, content, enhanced_content, transcript_text)
+          VALUES(new.id, note_keyword_text(new.title), note_keyword_text(new.content),
+            note_keyword_text(new.enhanced_content), note_keyword_text(note_transcript_text(new.transcript)));
+        END;
+        CREATE TRIGGER notes_fts_update AFTER UPDATE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content, enhanced_content, transcript_text)
+          VALUES('delete', old.id, note_keyword_text(old.title), note_keyword_text(old.content),
+            note_keyword_text(old.enhanced_content), note_keyword_text(note_transcript_text(old.transcript)));
+          INSERT INTO notes_fts(rowid, title, content, enhanced_content, transcript_text)
+          VALUES(new.id, note_keyword_text(new.title), note_keyword_text(new.content),
+            note_keyword_text(new.enhanced_content), note_keyword_text(note_transcript_text(new.transcript)));
+        END;
+        CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content, enhanced_content, transcript_text)
+          VALUES('delete', old.id, note_keyword_text(old.title), note_keyword_text(old.content),
+            note_keyword_text(old.enhanced_content), note_keyword_text(note_transcript_text(old.transcript)));
+        END;
+        INSERT INTO notes_fts(notes_fts) VALUES('rebuild');
+      `);
+    })();
   }
 
   _initVectorChangeJournal() {
@@ -4174,6 +4358,7 @@ class DatabaseManager {
         .get();
       // AUTOINCREMENT keeps acknowledgements unique even after the queue is
       // emptied or a deleted note id is reused while indexing is in flight.
+      this.db.exec("DROP TRIGGER IF EXISTS notes_vector_update");
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS pending_vector_changes (
           revision INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4184,9 +4369,10 @@ class DatabaseManager {
           ON CONFLICT(note_id) DO UPDATE SET revision = excluded.revision;
         END;
         CREATE TRIGGER IF NOT EXISTS notes_vector_update
-        AFTER UPDATE OF title, content, enhanced_content, space_id, folder_id, deleted_at ON notes
+        AFTER UPDATE OF title, content, enhanced_content, transcript, space_id, folder_id, deleted_at ON notes
         WHEN OLD.title IS NOT NEW.title OR OLD.content IS NOT NEW.content
           OR OLD.enhanced_content IS NOT NEW.enhanced_content
+          OR OLD.transcript IS NOT NEW.transcript
           OR OLD.space_id IS NOT NEW.space_id OR OLD.folder_id IS NOT NEW.folder_id
           OR OLD.deleted_at IS NOT NEW.deleted_at
         BEGIN
@@ -4230,9 +4416,12 @@ class DatabaseManager {
 
   getNoteForVectorIndex(noteId) {
     if (!this.db) throw new Error("Database not initialized");
-    // The durable index spans accounts; renderer/search reads still use the
-    // scoped getNote API before exposing any indexed result.
-    return this.db.prepare("SELECT * FROM notes WHERE id = ?").get(noteId) || null;
+    const scope = this._accountScopeCondition("notes");
+    return (
+      this.db
+        .prepare(`SELECT * FROM notes WHERE id = ? AND ${scope.sql}`)
+        .get(noteId, ...scope.params) || null
+    );
   }
 
   addPendingVectorPurge(spaceId) {
@@ -5753,7 +5942,7 @@ class DatabaseManager {
         this.db = null;
       }
       const dbPath = path.join(
-        app.getPath("userData"),
+        getAppDataDirectory(),
         process.env.NODE_ENV === "development" ? "transcriptions-dev.db" : "transcriptions.db"
       );
       if (fs.existsSync(dbPath)) {
@@ -5886,66 +6075,81 @@ class DatabaseManager {
     return this.db.prepare("SELECT * FROM speaker_profiles WHERE lower(email) = ?").get(normalized);
   }
 
-  upsertSpeakerProfile(name, email, embeddingBuffer, profileId = null) {
-    try {
-      if (!this.db) throw new Error("Database not initialized");
-      const normalizedEmail = this._normalizeEmail(email);
+  _speakerProfileRepresentations(profileId) {
+    return this.db
+      .prepare("SELECT * FROM speaker_profile_representations WHERE profile_id = ?")
+      .all(profileId)
+      .map((row) => ({
+        representation: speakerVectors.parseRepresentation(row.representation),
+        sample_count: row.sample_count,
+        space_id: row.space_id,
+      }))
+      .filter((row) => row.representation && row.representation.spaceId === row.space_id);
+  }
+
+  _withSpeakerRepresentations(profile) {
+    if (!profile) return profile;
+    const { embedding: _unknownHistoricalVector, ...identity } = profile;
+    return {
+      ...identity,
+      representations: this._speakerProfileRepresentations(profile.id).map(
+        (entry) => entry.representation
+      ),
+    };
+  }
+
+  upsertSpeakerProfile(name, email, representation, profileId = null) {
+    if (!this.db) throw new Error("Database not initialized");
+    const incoming = speakerVectors.representation(representation);
+    const normalizedEmail = this._normalizeEmail(email);
+    const update = this.db.transaction(() => {
       let existing = profileId
         ? this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(profileId)
         : null;
-      if (!existing && normalizedEmail) {
-        existing = this._findProfileByEmail(normalizedEmail);
-      }
-      if (!existing) {
-        existing = this.db
-          .prepare("SELECT * FROM speaker_profiles WHERE display_name = ?")
-          .get(name);
-      }
-      if (existing) {
-        const stored = new Float32Array(
-          existing.embedding.buffer,
-          existing.embedding.byteOffset,
-          existing.embedding.byteLength / 4
-        );
-        const incoming = new Float32Array(
-          embeddingBuffer.buffer,
-          embeddingBuffer.byteOffset,
-          embeddingBuffer.byteLength / 4
-        );
-        const updated = new Float32Array(stored.length);
-        for (let i = 0; i < stored.length; i++) {
-          updated[i] = 0.3 * incoming[i] + 0.7 * stored[i];
-        }
-        const updatedBuf = Buffer.from(updated.buffer);
-        const finalEmail = normalizedEmail || existing.email || null;
+      existing ||= normalizedEmail ? this._findProfileByEmail(normalizedEmail) : null;
+      existing ||= this.db
+        .prepare("SELECT * FROM speaker_profiles WHERE display_name = ?")
+        .get(name);
+      const profile = existing || {
+        id: this.db
+          .prepare("INSERT INTO speaker_profiles (display_name, email, embedding) VALUES (?, ?, ?)")
+          .run(name, normalizedEmail, Buffer.alloc(0)).lastInsertRowid,
+      };
+      const previous = this._speakerProfileRepresentations(profile.id).find(
+        (entry) => entry.space_id === incoming.spaceId
+      );
+      const result = previous
+        ? speakerVectors.weightedCentroid(
+            previous.representation,
+            incoming,
+            previous.sample_count,
+            1
+          )
+        : incoming;
+      this.db
+        .prepare(
+          "INSERT OR REPLACE INTO speaker_profile_representations (profile_id, space_id, representation, sample_count) VALUES (?, ?, ?, ?)"
+        )
+        .run(profile.id, result.spaceId, JSON.stringify(result), (previous?.sample_count || 0) + 1);
+      if (existing)
         this.db
           .prepare(
-            "UPDATE speaker_profiles SET display_name = ?, email = ?, embedding = ?, sample_count = sample_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            "UPDATE speaker_profiles SET display_name = ?, email = ?, sample_count = sample_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
           )
-          .run(name, finalEmail, updatedBuf, existing.id);
-        const resolved = this.db
-          .prepare("SELECT * FROM speaker_profiles WHERE id = ?")
-          .get(existing.id);
-        if (normalizedEmail) {
-          const collision = this.db
-            .prepare("SELECT * FROM speaker_profiles WHERE lower(email) = ? AND id != ?")
-            .get(normalizedEmail, existing.id);
-          if (collision) {
-            return this.mergeSpeakerProfiles(resolved, collision);
-          }
-        }
-        return resolved;
-      }
-      const result = this.db
-        .prepare("INSERT INTO speaker_profiles (display_name, email, embedding) VALUES (?, ?, ?)")
-        .run(name, normalizedEmail, embeddingBuffer);
-      return this.db
+          .run(name, normalizedEmail || existing.email || null, existing.id);
+      const current = this.db
         .prepare("SELECT * FROM speaker_profiles WHERE id = ?")
-        .get(result.lastInsertRowid);
-    } catch (error) {
-      debugLogger.error("Error upserting speaker profile", { error: error.message }, "database");
-      throw error;
-    }
+        .get(profile.id);
+      const collision = normalizedEmail
+        ? this.db
+            .prepare("SELECT * FROM speaker_profiles WHERE lower(email) = ? AND id != ?")
+            .get(normalizedEmail, profile.id)
+        : null;
+      return collision
+        ? this.mergeSpeakerProfiles(current, collision)
+        : this._withSpeakerRepresentations(current);
+    });
+    return update();
   }
 
   attachEmailToProfile(profileId, email) {
@@ -5961,7 +6165,9 @@ class DatabaseManager {
             "UPDATE speaker_profiles SET email = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
           )
           .run(profileId);
-        return this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(profileId);
+        return this._withSpeakerRepresentations(
+          this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(profileId)
+        );
       }
 
       const collision = this._findProfileByEmail(normalizedEmail);
@@ -5974,7 +6180,9 @@ class DatabaseManager {
           "UPDATE speaker_profiles SET email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         )
         .run(normalizedEmail, profileId);
-      return this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(profileId);
+      return this._withSpeakerRepresentations(
+        this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(profileId)
+      );
     } catch (error) {
       debugLogger.error(
         "Error attaching email to speaker profile",
@@ -5986,46 +6194,57 @@ class DatabaseManager {
   }
 
   mergeSpeakerProfiles(a, b) {
+    if (a.id === b.id) return this._withSpeakerRepresentations(a);
     const winner = (a.sample_count || 0) >= (b.sample_count || 0) ? a : b;
     const loser = winner === a ? b : a;
-
-    const winnerEmb = new Float32Array(
-      winner.embedding.buffer,
-      winner.embedding.byteOffset,
-      winner.embedding.byteLength / 4
-    );
-    const loserEmb = new Float32Array(
-      loser.embedding.buffer,
-      loser.embedding.byteOffset,
-      loser.embedding.byteLength / 4
-    );
-    const wSamples = winner.sample_count || 1;
-    const lSamples = loser.sample_count || 1;
-    const total = wSamples + lSamples;
-    const blended = new Float32Array(winnerEmb.length);
-    for (let i = 0; i < winnerEmb.length; i++) {
-      blended[i] = (winnerEmb[i] * wSamples + loserEmb[i] * lSamples) / total;
-    }
-
     const finalEmail = winner.email || loser.email || null;
     const finalName = winner.display_name || loser.display_name;
-
-    const tx = this.db.transaction(() => {
+    this.db.transaction(() => {
+      const winnerVectors = this._speakerProfileRepresentations(winner.id);
+      for (const incoming of this._speakerProfileRepresentations(loser.id)) {
+        const previous = winnerVectors.find((entry) => entry.space_id === incoming.space_id);
+        const result = previous
+          ? speakerVectors.weightedCentroid(
+              previous.representation,
+              incoming.representation,
+              previous.sample_count,
+              incoming.sample_count
+            )
+          : incoming.representation;
+        this.db
+          .prepare(
+            "INSERT OR REPLACE INTO speaker_profile_representations (profile_id, space_id, representation, sample_count) VALUES (?, ?, ?, ?)"
+          )
+          .run(
+            winner.id,
+            result.spaceId,
+            JSON.stringify(result),
+            (previous?.sample_count || 0) + incoming.sample_count
+          );
+      }
       this.db
         .prepare(
-          "UPDATE speaker_profiles SET display_name = ?, email = ?, embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+          "UPDATE speaker_profiles SET display_name = ?, email = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         )
-        .run(finalName, finalEmail, Buffer.from(blended.buffer), total, winner.id);
+        .run(
+          finalName,
+          finalEmail,
+          (winner.sample_count || 1) + (loser.sample_count || 1),
+          winner.id
+        );
       this.db
         .prepare(
           "UPDATE speaker_mappings SET profile_id = ?, display_name = ? WHERE profile_id = ?"
         )
         .run(winner.id, finalName, loser.id);
+      this.db
+        .prepare("DELETE FROM speaker_profile_representations WHERE profile_id = ?")
+        .run(loser.id);
       this.db.prepare("DELETE FROM speaker_profiles WHERE id = ?").run(loser.id);
-    });
-    tx();
-
-    return this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(winner.id);
+    })();
+    return this._withSpeakerRepresentations(
+      this.db.prepare("SELECT * FROM speaker_profiles WHERE id = ?").get(winner.id)
+    );
   }
 
   getSpeakerProfiles(includeEmbedding = false) {
@@ -6035,7 +6254,10 @@ class DatabaseManager {
         ? "SELECT * FROM speaker_profiles"
         : `SELECT id, display_name, email, sample_count, created_at, updated_at
            FROM speaker_profiles`;
-      return this.db.prepare(query).all();
+      return this.db
+        .prepare(query)
+        .all()
+        .map((profile) => (includeEmbedding ? this._withSpeakerRepresentations(profile) : profile));
     } catch (error) {
       debugLogger.error("Error getting speaker profiles", { error: error.message }, "database");
       throw error;
@@ -6075,10 +6297,10 @@ class DatabaseManager {
       if (!this.getNote(noteId)) return { success: false, error: "Note not found" };
       const transaction = this.db.transaction((entries) => {
         const stmt = this.db.prepare(
-          "INSERT OR REPLACE INTO note_speaker_embeddings (note_id, speaker_id, embedding) VALUES (?, ?, ?)"
+          "INSERT OR REPLACE INTO note_speaker_representations (note_id, speaker_id, representation) VALUES (?, ?, ?)"
         );
-        for (const [speakerId, buffer] of entries) {
-          stmt.run(noteId, speakerId, buffer);
+        for (const [speakerId, value] of entries) {
+          stmt.run(noteId, speakerId, JSON.stringify(speakerVectors.representation(value)));
         }
       });
       transaction(Object.entries(embeddings));
@@ -6097,7 +6319,14 @@ class DatabaseManager {
     try {
       if (!this.db) throw new Error("Database not initialized");
       if (!this.getNote(noteId)) return [];
-      return this.db.prepare("SELECT * FROM note_speaker_embeddings WHERE note_id = ?").all(noteId);
+      return this.db
+        .prepare("SELECT * FROM note_speaker_representations WHERE note_id = ?")
+        .all(noteId)
+        .map((entry) => ({
+          ...entry,
+          representation: speakerVectors.parseRepresentation(entry.representation),
+        }))
+        .filter((entry) => entry.representation);
     } catch (error) {
       debugLogger.error(
         "Error getting note speaker embeddings",
@@ -6599,19 +6828,23 @@ class DatabaseManager {
   // deletes use the restore method above instead.
   hardDeleteNote(id) {
     try {
-      if (!this.db) throw new Error("Database not initialized");
-      if (!this.getNote(id)) return { success: false, id, error: "Note not found" };
-      const result = this.db.transaction(() => {
-        this._retireConversationsWhere("note_id = ?", [id], {
-          scrubSyncedMessages: true,
-        });
-        this._deleteSpeakerRowsForNotes("SELECT id FROM notes WHERE id = ?", id);
-        return this.db.prepare("DELETE FROM notes WHERE id = ?").run(id);
-      })();
-      return { success: result.changes > 0, id };
-    } catch (error) {
-      debugLogger.error("Error hard deleting note", { error: error.message }, "database");
-      throw error;
+      try {
+        if (!this.db) throw new Error("Database not initialized");
+        if (!this.getNote(id)) return { success: false, id, error: "Note not found" };
+        const result = this.db.transaction(() => {
+          this._retireConversationsWhere("note_id = ?", [id], {
+            scrubSyncedMessages: true,
+          });
+          this._deleteSpeakerRowsForNotes("SELECT id FROM notes WHERE id = ?", id);
+          return this.db.prepare("DELETE FROM notes WHERE id = ?").run(id);
+        })();
+        return { success: result.changes > 0, id };
+      } catch (error) {
+        debugLogger.error("Error hard deleting note", { error: error.message }, "database");
+        throw error;
+      }
+    } finally {
+      this._flushImportedMediaCleanup();
     }
   }
 
@@ -6787,75 +7020,79 @@ class DatabaseManager {
 
   hardDeleteFolder(id) {
     try {
-      if (!this.db) throw new Error("Database not initialized");
-      const folder = this._getFolderInAccountScope(id);
-      if (!folder) return { success: false, id, error: "Folder not found" };
-      const childNotes = "SELECT id FROM notes WHERE folder_id = ?";
-      const heldNotes =
-        "SELECT entity_id FROM optimistic_folder_delete_rows WHERE folder_id = ? AND entity_type = 'note'";
-      const heldConversations =
-        "SELECT entity_id FROM optimistic_folder_delete_rows WHERE folder_id = ? AND entity_type = 'conversation'";
-      const accountScope = this._accountScopeCondition("notes");
-      const noteIds = this.db
-        .prepare(`${childNotes} AND ${accountScope.sql}`)
-        .all(id, ...accountScope.params)
-        .map((row) => row.id);
-      let relocatedNotes = [];
-      const result = this.db.transaction(() => {
-        relocatedNotes = this._releaseOutOfScopeChildNotes(id);
-        // Note chats normally have note_id only. Retire them while the child
-        // rows still identify which chats belong to this folder cleanup, then
-        // handle independently folder-scoped conversations.
-        this._retireConversationsWhere(`note_id IN (${childNotes})`, [id], {
-          scrubSyncedMessages: true,
-        });
-        // The journal is the authoritative ownership record for the
-        // optimistic operation. Use it as well as current parent columns so a
-        // late stale write cannot strand a held row by changing its scope.
-        this.db
-          .prepare(
-            `DELETE FROM agent_messages
+      try {
+        if (!this.db) throw new Error("Database not initialized");
+        const folder = this._getFolderInAccountScope(id);
+        if (!folder) return { success: false, id, error: "Folder not found" };
+        const childNotes = "SELECT id FROM notes WHERE folder_id = ?";
+        const heldNotes =
+          "SELECT entity_id FROM optimistic_folder_delete_rows WHERE folder_id = ? AND entity_type = 'note'";
+        const heldConversations =
+          "SELECT entity_id FROM optimistic_folder_delete_rows WHERE folder_id = ? AND entity_type = 'conversation'";
+        const accountScope = this._accountScopeCondition("notes");
+        const noteIds = this.db
+          .prepare(`${childNotes} AND ${accountScope.sql}`)
+          .all(id, ...accountScope.params)
+          .map((row) => row.id);
+        let relocatedNotes = [];
+        const result = this.db.transaction(() => {
+          relocatedNotes = this._releaseOutOfScopeChildNotes(id);
+          // Note chats normally have note_id only. Retire them while the child
+          // rows still identify which chats belong to this folder cleanup, then
+          // handle independently folder-scoped conversations.
+          this._retireConversationsWhere(`note_id IN (${childNotes})`, [id], {
+            scrubSyncedMessages: true,
+          });
+          // The journal is the authoritative ownership record for the
+          // optimistic operation. Use it as well as current parent columns so a
+          // late stale write cannot strand a held row by changing its scope.
+          this.db
+            .prepare(
+              `DELETE FROM agent_messages
              WHERE conversation_id IN (${heldConversations})`
-          )
-          .run(id);
-        this.db
-          .prepare(
-            `DELETE FROM agent_conversations
+            )
+            .run(id);
+          this.db
+            .prepare(
+              `DELETE FROM agent_conversations
              WHERE cloud_id IS NULL AND id IN (${heldConversations})`
-          )
-          .run(id);
-        this.db
-          .prepare(
-            `UPDATE agent_conversations
+            )
+            .run(id);
+          this.db
+            .prepare(
+              `UPDATE agent_conversations
              SET deleted_at = COALESCE(deleted_at, datetime('now')),
                  sync_status = 'pending', updated_at = datetime('now')
              WHERE cloud_id IS NOT NULL AND id IN (${heldConversations})`
-          )
-          .run(id);
-        this._deleteSpeakerRowsForNotes(childNotes, id);
-        this._deleteSpeakerRowsForNotes(heldNotes, id);
-        this.db.prepare(`DELETE FROM notes WHERE id IN (${heldNotes})`).run(id);
-        this.db.prepare(`DELETE FROM notes WHERE id IN (${childNotes})`).run(id);
-        this._retireConversationsWhere("folder_id = ?", [id], {
-          scrubSyncedMessages: true,
-        });
-        // Held cloud chats now become ordinary pending cloud deletes. Rows
-        // tombstoned before the folder action were never journaled and keep
-        // their existing pending state.
-        const deleted = this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
-        this.db.prepare("DELETE FROM optimistic_folder_delete_rows WHERE folder_id = ?").run(id);
-        return deleted;
-      })();
-      return {
-        success: result.changes > 0,
-        id,
-        noteIds,
-        relocatedNotes,
-        name: folder?.name ?? null,
-      };
-    } catch (error) {
-      debugLogger.error("Error hard deleting folder", { error: error.message }, "database");
-      throw error;
+            )
+            .run(id);
+          this._deleteSpeakerRowsForNotes(childNotes, id);
+          this._deleteSpeakerRowsForNotes(heldNotes, id);
+          this.db.prepare(`DELETE FROM notes WHERE id IN (${heldNotes})`).run(id);
+          this.db.prepare(`DELETE FROM notes WHERE id IN (${childNotes})`).run(id);
+          this._retireConversationsWhere("folder_id = ?", [id], {
+            scrubSyncedMessages: true,
+          });
+          // Held cloud chats now become ordinary pending cloud deletes. Rows
+          // tombstoned before the folder action were never journaled and keep
+          // their existing pending state.
+          const deleted = this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
+          this.db.prepare("DELETE FROM optimistic_folder_delete_rows WHERE folder_id = ?").run(id);
+          return deleted;
+        })();
+        return {
+          success: result.changes > 0,
+          id,
+          noteIds,
+          relocatedNotes,
+          name: folder?.name ?? null,
+        };
+      } catch (error) {
+        debugLogger.error("Error hard deleting folder", { error: error.message }, "database");
+        throw error;
+      }
+    } finally {
+      this._flushImportedMediaCleanup();
     }
   }
 
@@ -6870,94 +7107,98 @@ class DatabaseManager {
   // deleted.
   relocateRevokedFolder(id, privateSpaceId, preserveFolder = false) {
     try {
-      if (!this.db) throw new Error("Database not initialized");
-      if (!this._getFolderInAccountScope(id)) {
-        return { success: false, error: "Folder not found" };
-      }
-      // If access revocation overtakes an optimistic delete, first recover the
-      // held rows so the normal dirty-note preservation rules can classify
-      // them from their real pre-delete state.
-      const held = this.db
-        .prepare(
-          "SELECT 1 FROM optimistic_folder_delete_rows WHERE folder_id = ? AND entity_type = 'folder'"
-        )
-        .get(id);
-      if (held) {
-        const rollback = this.restoreFolderAfterDeniedDelete(id);
-        if (!rollback.success) return rollback;
-      }
-
-      const folder = this.db.prepare("SELECT * FROM folders WHERE id = ?").get(id);
-      if (!folder) return { success: false, error: "Folder not found" };
-      const serverOwnedChildren =
-        "SELECT id FROM notes WHERE folder_id = ? AND (deleted_at IS NOT NULL OR (sync_status = 'synced' AND cloud_id IS NOT NULL))";
-      const result = this.db.transaction(() => {
-        const preservedIds = this.db
-          .prepare(
-            "SELECT id FROM notes WHERE folder_id = ? AND deleted_at IS NULL AND (sync_status != 'synced' OR cloud_id IS NULL)"
-          )
-          .all(id)
-          .map((row) => row.id);
-        const deletedNoteIds = this.db
-          .prepare(serverOwnedChildren)
-          .all(id)
-          .map((row) => row.id);
-        // Note chats have no folder_id, so retire them before deleting the
-        // server-owned notes that prove they belonged to this revoked folder.
-        this._retireConversationsWhere(`note_id IN (${serverOwnedChildren})`, [id], {
-          scrubSyncedMessages: true,
-        });
-        this._deleteSpeakerRowsForNotes(serverOwnedChildren, id);
-        this.db.prepare(`DELETE FROM notes WHERE id IN (${serverOwnedChildren})`).run(id);
-        const relocateNote = this.db.prepare(
-          "UPDATE notes SET space_id = ?, folder_id = ?, client_note_id = ?, cloud_id = NULL, cloud_updated_at = NULL, owner_user_id = NULL, updated_by_user_id = NULL, sync_status = 'pending', left_team = 0, is_shared = 0, share_token = NULL, updated_at = datetime('now') WHERE id = ?"
-        );
-        const detachNoteConversation = this.db.prepare(
-          "UPDATE agent_conversations SET space_id = NULL, folder_id = NULL WHERE note_id = ?"
-        );
-        for (const noteId of preservedIds) {
-          relocateNote.run(privateSpaceId, preserveFolder ? id : null, randomUUID(), noteId);
-          // Note-scoped chats follow a preserved dirty note, not the revoked
-          // team container. Folder-only chats are handled separately below.
-          detachNoteConversation.run(noteId);
+      try {
+        if (!this.db) throw new Error("Database not initialized");
+        if (!this._getFolderInAccountScope(id)) {
+          return { success: false, error: "Folder not found" };
         }
-        let preservedFolder = null;
-        if (preserveFolder) {
-          let name = folder.name;
-          const taken = this.db.prepare(
-            "SELECT 1 FROM folders WHERE name = ? AND space_id = ? AND deleted_at IS NULL AND id != ?"
-          );
-          for (let n = 2; taken.get(name, privateSpaceId, id); n++) {
-            name = `${folder.name} (${n})`;
-          }
-          this.db
+        // If access revocation overtakes an optimistic delete, first recover the
+        // held rows so the normal dirty-note preservation rules can classify
+        // them from their real pre-delete state.
+        const held = this.db
+          .prepare(
+            "SELECT 1 FROM optimistic_folder_delete_rows WHERE folder_id = ? AND entity_type = 'folder'"
+          )
+          .get(id);
+        if (held) {
+          const rollback = this.restoreFolderAfterDeniedDelete(id);
+          if (!rollback.success) return rollback;
+        }
+
+        const folder = this.db.prepare("SELECT * FROM folders WHERE id = ?").get(id);
+        if (!folder) return { success: false, error: "Folder not found" };
+        const serverOwnedChildren =
+          "SELECT id FROM notes WHERE folder_id = ? AND (deleted_at IS NOT NULL OR (sync_status = 'synced' AND cloud_id IS NOT NULL))";
+        const result = this.db.transaction(() => {
+          const preservedIds = this.db
             .prepare(
-              "UPDATE folders SET space_id = ?, name = ?, client_folder_id = ?, cloud_id = NULL, sync_status = 'pending', left_team = 0, updated_at = datetime('now') WHERE id = ?"
+              "SELECT id FROM notes WHERE folder_id = ? AND deleted_at IS NULL AND (sync_status != 'synced' OR cloud_id IS NULL)"
             )
-            .run(privateSpaceId, name, randomUUID(), id);
-          preservedFolder = this.db.prepare("SELECT * FROM folders WHERE id = ?").get(id);
-          // Folder-scoped chats follow the preserved folder into the private
-          // space so their space ref doesn't dangle on the revoked space.
-          this.db
-            .prepare("UPDATE agent_conversations SET space_id = ? WHERE folder_id = ?")
-            .run(privateSpaceId, id);
-        } else {
-          this._retireConversationsWhere("folder_id = ?", [id], {
+            .all(id)
+            .map((row) => row.id);
+          const deletedNoteIds = this.db
+            .prepare(serverOwnedChildren)
+            .all(id)
+            .map((row) => row.id);
+          // Note chats have no folder_id, so retire them before deleting the
+          // server-owned notes that prove they belonged to this revoked folder.
+          this._retireConversationsWhere(`note_id IN (${serverOwnedChildren})`, [id], {
             scrubSyncedMessages: true,
           });
-          this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
-        }
-        const getNote = this.db.prepare("SELECT * FROM notes WHERE id = ?");
-        return {
-          folder: preservedFolder,
-          relocatedNotes: preservedIds.map((noteId) => getNote.get(noteId)),
-          deletedNoteIds,
-        };
-      })();
-      return { success: true, folderName: folder.name, ...result };
-    } catch (error) {
-      debugLogger.error("Error relocating revoked folder", { error: error.message }, "database");
-      throw error;
+          this._deleteSpeakerRowsForNotes(serverOwnedChildren, id);
+          this.db.prepare(`DELETE FROM notes WHERE id IN (${serverOwnedChildren})`).run(id);
+          const relocateNote = this.db.prepare(
+            "UPDATE notes SET space_id = ?, folder_id = ?, client_note_id = ?, cloud_id = NULL, cloud_updated_at = NULL, owner_user_id = NULL, updated_by_user_id = NULL, sync_status = 'pending', left_team = 0, is_shared = 0, share_token = NULL, updated_at = datetime('now') WHERE id = ?"
+          );
+          const detachNoteConversation = this.db.prepare(
+            "UPDATE agent_conversations SET space_id = NULL, folder_id = NULL WHERE note_id = ?"
+          );
+          for (const noteId of preservedIds) {
+            relocateNote.run(privateSpaceId, preserveFolder ? id : null, randomUUID(), noteId);
+            // Note-scoped chats follow a preserved dirty note, not the revoked
+            // team container. Folder-only chats are handled separately below.
+            detachNoteConversation.run(noteId);
+          }
+          let preservedFolder = null;
+          if (preserveFolder) {
+            let name = folder.name;
+            const taken = this.db.prepare(
+              "SELECT 1 FROM folders WHERE name = ? AND space_id = ? AND deleted_at IS NULL AND id != ?"
+            );
+            for (let n = 2; taken.get(name, privateSpaceId, id); n++) {
+              name = `${folder.name} (${n})`;
+            }
+            this.db
+              .prepare(
+                "UPDATE folders SET space_id = ?, name = ?, client_folder_id = ?, cloud_id = NULL, sync_status = 'pending', left_team = 0, updated_at = datetime('now') WHERE id = ?"
+              )
+              .run(privateSpaceId, name, randomUUID(), id);
+            preservedFolder = this.db.prepare("SELECT * FROM folders WHERE id = ?").get(id);
+            // Folder-scoped chats follow the preserved folder into the private
+            // space so their space ref doesn't dangle on the revoked space.
+            this.db
+              .prepare("UPDATE agent_conversations SET space_id = ? WHERE folder_id = ?")
+              .run(privateSpaceId, id);
+          } else {
+            this._retireConversationsWhere("folder_id = ?", [id], {
+              scrubSyncedMessages: true,
+            });
+            this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
+          }
+          const getNote = this.db.prepare("SELECT * FROM notes WHERE id = ?");
+          return {
+            folder: preservedFolder,
+            relocatedNotes: preservedIds.map((noteId) => getNote.get(noteId)),
+            deletedNoteIds,
+          };
+        })();
+        return { success: true, folderName: folder.name, ...result };
+      } catch (error) {
+        debugLogger.error("Error relocating revoked folder", { error: error.message }, "database");
+        throw error;
+      }
+    } finally {
+      this._flushImportedMediaCleanup();
     }
   }
 
@@ -7631,7 +7872,7 @@ class DatabaseManager {
       return this.db
         .prepare(
           `SELECT DISTINCT nse.note_id
-          FROM note_speaker_embeddings nse
+          FROM note_speaker_representations nse
           JOIN notes ON notes.id = nse.note_id
           LEFT JOIN speaker_mappings sm ON nse.note_id = sm.note_id AND nse.speaker_id = sm.speaker_id
           WHERE sm.note_id IS NULL AND ${accountScope.sql}`

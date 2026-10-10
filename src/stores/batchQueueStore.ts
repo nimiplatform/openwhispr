@@ -1,3 +1,5 @@
+import { invokeNimiBusiness } from "../services/nimiClient";
+import { NIMI_USER_CANCEL } from "../services/nimiRequest";
 import { create } from "zustand";
 import i18n from "../i18n";
 import { transcribeFileWithSpeakers } from "../services/fileTranscription";
@@ -5,9 +7,8 @@ import type { FileTranscriptionConfig, DiarizationSettings } from "../services/f
 import { DOWNLOAD_ERROR_KEYS, transcriptionErrorKey } from "../components/notes/shared";
 import { saveUploadNote, uploadTitleFallback } from "../services/uploadNotes";
 import { getSettings } from "./settingsStore";
-import { isTranscriptionContextAllowed } from "./policyRules";
+import { isNimiBusinessAIAllowed } from "./policyRules";
 import { usePolicyStore } from "./policyStore";
-import { isManagedTranscriptionActive } from "../services/managedTranscription";
 import { describeProviderError } from "../utils/describeProviderError";
 
 export type QueueItemStatus = "queued" | "downloading" | "transcribing" | "done" | "error";
@@ -26,6 +27,7 @@ export interface QueueItem {
   warning?: boolean;
   // Transcription completed, but requested speaker labels could not be applied.
   diarizationWarning?: boolean;
+  speakerMatchingWarning?: boolean;
   noteId?: number;
   tempPath?: string;
 }
@@ -36,7 +38,7 @@ export interface TranscribeOptions {
   // Returns an i18n key under notes.upload.* when the file exceeds the
   // mode-aware size limit, null when acceptable.
   validateSize?: (sizeBytes: number) => string | null;
-  generateTitle?: (text: string) => Promise<string | null>;
+  generateTitle?: (text: string, signal?: AbortSignal) => Promise<string | null>;
 }
 
 interface BatchQueueStoreState {
@@ -56,6 +58,7 @@ export const useBatchQueueStore = create<BatchQueueStoreState>()(() => ({
 // immediately.
 let runId = 0;
 let activeUploadRequestId: string | null = null;
+let activeUploadController: AbortController | null = null;
 
 function updateQueue(updater: (prev: QueueItem[]) => QueueItem[]) {
   useBatchQueueStore.setState((s) => ({ queue: updater(s.queue) }));
@@ -96,10 +99,8 @@ export function removeQueueItem(id: string) {
 
 export function cancelBatch() {
   runId++;
-  if (activeUploadRequestId) {
-    window.electronAPI.cancelUploadTranscription?.(activeUploadRequestId);
-    activeUploadRequestId = null;
-  }
+  activeUploadController?.abort(NIMI_USER_CANCEL);
+  activeUploadRequestId = null;
   window.electronAPI.cancelUrlDownload();
   useBatchQueueStore.setState((s) => ({
     isProcessing: false,
@@ -113,6 +114,7 @@ export function cancelBatch() {
 
 export function clearBatchQueue() {
   runId++;
+  activeUploadController?.abort(NIMI_USER_CANCEL);
   useBatchQueueStore.setState({ queue: [], isProcessing: false });
 }
 
@@ -125,20 +127,11 @@ export function processBatchQueue(
   diarization: DiarizationSettings
 ): void {
   if (useBatchQueueStore.getState().isProcessing) return;
-  if (
-    !isManagedTranscriptionActive() &&
-    !isTranscriptionContextAllowed(usePolicyStore.getState(), getSettings(), "upload")
-  )
-    return;
+  if (!isNimiBusinessAIAllowed(usePolicyStore.getState())) return;
   const run = ++runId;
   useBatchQueueStore.setState({ isProcessing: true });
 
-  const snapshotApiKey = transcribeOpts.transcription.getApiKey();
-  const transcription: FileTranscriptionConfig = {
-    ...transcribeOpts.transcription,
-    getApiKey: () => snapshotApiKey,
-  };
-
+  const transcription = { ...transcribeOpts.transcription };
   // Run-scoped writer: a cancelled run's late IPC results must not touch items.
   const updateItem = (id: string, updates: Partial<QueueItem>) => {
     if (run !== runId) return;
@@ -146,6 +139,8 @@ export function processBatchQueue(
   };
 
   const processItem = async (item: QueueItem) => {
+    const requestId = crypto.randomUUID();
+    const controller = new AbortController();
     let filePath = item.path;
     let tempPath: string | undefined;
     let noteName = item.name;
@@ -201,17 +196,15 @@ export function processBatchQueue(
 
       updateItem(item.id, { status: "transcribing", progress: 0 });
 
-      const requestId = crypto.randomUUID();
       activeUploadRequestId = requestId;
+      activeUploadController = controller;
       const transcriptionResult = await transcribeFileWithSpeakers(
         filePath,
         transcription,
         diarization,
         durationSeconds,
-        { requestId, timestamps: true }
-      ).finally(() => {
-        if (activeUploadRequestId === requestId) activeUploadRequestId = null;
-      });
+        { requestId, timestamps: true, signal: controller.signal }
+      );
 
       if (run !== runId) return;
 
@@ -239,13 +232,15 @@ export function processBatchQueue(
       let noteTitle = noteName;
       if (item.source === "file") {
         noteTitle =
-          (await transcribeOpts.generateTitle?.(finalText)) ||
+          (await transcribeOpts.generateTitle?.(finalText, controller.signal)) ||
           uploadTitleFallback(finalText, noteName);
         if (run !== runId) return;
       }
 
       const noteRes = await saveUploadNote({
         title: noteTitle,
+        requestId,
+        signal: controller.signal,
         text: finalText,
         sourceName: noteName,
         folderId: transcribeOpts.folderId,
@@ -254,24 +249,38 @@ export function processBatchQueue(
         segments: transcriptionResult.segments,
       });
 
+      controller.signal.throwIfAborted();
+      if (run !== runId) return;
       if (noteRes.success && noteRes.note) {
         updateItem(item.id, {
           status: "done",
           progress: 100,
           warning: !!transcriptionResult.warning,
           diarizationWarning: !!transcriptionResult.diarizationWarning,
+          speakerMatchingWarning: !!transcriptionResult.speakerMatchingWarning,
           noteId: noteRes.note.id,
         });
       } else {
         updateItem(item.id, { status: "error", error: "batchSaveFailed" });
       }
     } catch (err) {
+      if ((err as { audioCancellationFailed?: boolean })?.audioCancellationFailed && run !== runId)
+        updateQueue((queue) =>
+          queue.map((entry) =>
+            entry.id === item.id
+              ? { ...entry, status: "error", error: (err as Error).message }
+              : entry
+          )
+        );
       updateItem(item.id, {
         status: "error",
         error:
           transcriptionErrorKey(err) || (err instanceof Error ? err.message : "batchUnknownError"),
       });
     } finally {
+      void invokeNimiBusiness("openwhispr.ai.detach", { requestId }).catch(() => {});
+      if (activeUploadRequestId === requestId) activeUploadRequestId = null;
+      if (activeUploadController === controller) activeUploadController = null;
       // Nothing else owns the temp file, so delete it even for a stale run.
       if (tempPath) {
         window.electronAPI.deleteTempFile(tempPath);

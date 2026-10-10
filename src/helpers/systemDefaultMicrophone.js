@@ -9,6 +9,7 @@ const FAILURE_RETRY_MS = 30000;
 
 const WINDOWS_DEFAULT_INPUT_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $source = @'
 using System;
 using System.Runtime.InteropServices;

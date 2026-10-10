@@ -1,3 +1,4 @@
+import NimiAISettings from "../settings/NimiAISettings";
 import { useState, useEffect, useCallback } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTranslation } from "react-i18next";
@@ -22,7 +23,7 @@ import {
 import { notesInputClass, notesTextareaClass } from "./shared";
 import { useDialogs } from "../../hooks/useDialogs";
 import { AlertDialog } from "../ui/dialog";
-import ReasoningModelSelector from "../ReasoningModelSelector";
+
 import { useSystemAudioPermission } from "../../hooks/useSystemAudioPermission";
 import { canManageSystemAudioInApp } from "../../utils/systemAudioAccess";
 import { usePolicySnapshot } from "../../hooks/usePolicy";
@@ -40,9 +41,8 @@ interface NotesOnboardingProps {
 export default function NotesOnboarding({ onComplete }: NotesOnboardingProps) {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const { isProUser, isProLoading, isLLMConfigured, complete } = useNotesOnboarding();
+  const { complete } = useNotesOnboarding();
   const templates = useActionsOfKind("template");
-  const [llmExpanded, setLlmExpanded] = useState(!isLLMConfigured && !isProUser);
   const [createExpanded, setCreateExpanded] = useState(false);
   const [actionName, setActionName] = useState("");
   const [actionDescription, setActionDescription] = useState("");
@@ -139,59 +139,11 @@ export default function NotesOnboarding({ onComplete }: NotesOnboardingProps) {
           </p>
         </div>
 
-        {/* LLM Configuration — non-Pro only, deferred until pro status is known */}
-        {!isProLoading && !isProUser && (
-          <div className={cn(CARD_CLASS, isLLMConfigured ? CARD_DONE_CLASS : CARD_IDLE_CLASS)}>
-            <button
-              type="button"
-              onClick={() => setLlmExpanded(!llmExpanded)}
-              aria-expanded={llmExpanded}
-              className="flex w-full items-center justify-between px-5 py-4 text-start"
-            >
-              <div className="flex items-center gap-3">
-                <Zap
-                  size={16}
-                  className={cn(isLLMConfigured ? "text-success/70" : "text-foreground/45")}
-                />
-                <span className="text-sm font-medium text-foreground">
-                  {t("notes.onboarding.llm.title")}
-                </span>
-                {isLLMConfigured && (
-                  <span className="text-xs font-medium text-success/70">
-                    {t("notes.onboarding.llm.configured")}
-                  </span>
-                )}
-              </div>
-              <ChevronRight
-                size={14}
-                className={cn(
-                  "text-foreground/45 transition-transform duration-200",
-                  llmExpanded ? "rotate-90" : "rtl:rotate-180"
-                )}
-              />
-            </button>
-
-            {llmExpanded && (
-              <div className="space-y-4 px-5 pb-5" style={{ animation: "float-up 0.2s ease-out" }}>
-                <p className="text-sm leading-relaxed text-muted-foreground">
-                  {t("notes.onboarding.llm.description")}
-                </p>
-
-                <ReasoningModelSelector
-                  reasoningModel={cleanupConfig.model}
-                  setReasoningModel={setCleanupModel}
-                  localReasoningProvider={cleanupConfig.provider}
-                  setLocalReasoningProvider={setCleanupProvider}
-                  cloudReasoningBaseUrl={cleanupConfig.cloudBaseUrl ?? ""}
-                  setCloudReasoningBaseUrl={setCleanupCloudBaseUrl}
-                  customReasoningApiKey={cleanupConfig.customApiKey ?? ""}
-                  setCustomReasoningApiKey={setCleanupCustomApiKey}
-                  setReasoningMode={setCleanupMode}
-                />
-              </div>
-            )}
-          </div>
-        )}
+        <div className={cn(CARD_CLASS, CARD_IDLE_CLASS, "space-y-4 p-5")}>
+          <h2 className="text-sm font-medium">{t("notes.onboarding.llm.title")}</h2>
+          <p className="text-sm text-muted-foreground">{t("notes.onboarding.llm.description")}</p>
+          <NimiAISettings initialCapability="text.generate" />
+        </div>
 
         {/* System Audio Permission */}
         {shouldShowSystemAudioPermission && (

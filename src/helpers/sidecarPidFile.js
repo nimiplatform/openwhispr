@@ -1,3 +1,4 @@
+const { getAppDataDirectory } = require("./appData");
 const fs = require("fs");
 const path = require("path");
 const { app } = require("electron");
@@ -5,7 +6,7 @@ const { app } = require("electron");
 const SUBDIR = "sidecar-pids";
 
 function pidDir() {
-  return path.join(app.getPath("userData"), SUBDIR);
+  return path.join(getAppDataDirectory(), SUBDIR);
 }
 
 function pidPath(name) {

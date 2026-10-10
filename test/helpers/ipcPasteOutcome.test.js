@@ -94,7 +94,7 @@ test("paste-text reports an onboarding demo no-op without invoking the clipboard
 
   const result = await handlers.get("paste-text")({ sender: {} }, "demo transcript");
 
-  assert.deepEqual(result, { success: true, pasted: false });
+  assert.deepEqual(result, { success: true, pasted: false, reason: "onboarding-demo" });
   assert.equal(pasteCalls, 0);
 });
 
@@ -104,6 +104,7 @@ test("paste-text reports pasted only after the clipboard paste completes", async
   target.clipboardManager = {
     pasteText: async (text, options) => {
       pastes.push({ text, options });
+      return { pasted: true };
     },
   };
 
@@ -123,7 +124,7 @@ test("paste-text preserves a clipboard-only fallback as not pasted", async () =>
     allowClipboardFallback: true,
   });
 
-  assert.deepEqual(result, { success: true, pasted: false });
+  assert.deepEqual(result, { success: false, pasted: false });
 });
 
 test("paste-text tells the renderer why a paste was held back", async () => {
@@ -134,7 +135,7 @@ test("paste-text tells the renderer why a paste was held back", async () => {
 
   const result = await handlers.get("paste-text")({ sender: { id: 1 } }, "held transcript");
 
-  assert.deepEqual(result, { success: true, pasted: false, reason: "modifiers-held" });
+  assert.deepEqual(result, { success: false, pasted: false, reason: "modifiers-held" });
 });
 
 test("paste-text does not schedule AutoLearn monitoring after a clipboard-only fallback", async (t) => {
@@ -164,7 +165,7 @@ test("paste-text does not schedule AutoLearn monitoring after a clipboard-only f
     allowClipboardFallback: true,
   });
 
-  assert.deepEqual(result, { success: true, pasted: false });
+  assert.deepEqual(result, { success: false, pasted: false });
   assert.deepEqual(monitored, []);
 });
 
@@ -249,4 +250,40 @@ test("Accessibility settings opens the macOS system pane and reports launch fail
     success: false,
     error: "launch failed",
   });
+});
+
+test("Windows IPC uses captured identity and rejects an absent injection acknowledgement", async (t) => {
+  const previous = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32" });
+  t.after(() => {
+    Object.defineProperty(process, "platform", previous);
+    target.selectionManager = null;
+  });
+  target.windowManager = { isOnboardingDemoActive: () => false };
+  target.selectionManager = {
+    getWinTarget: async () => ({
+      kind: "win-hwnd",
+      id: "1AB",
+      processId: 42,
+      processStarted: "123456",
+      exeName: "notepad.exe",
+    }),
+  };
+  let options;
+  target.clipboardManager = {
+    pasteText: async (_text, value) => {
+      options = value;
+      return undefined;
+    },
+  };
+  assert.deepEqual(
+    await handlers.get("paste-text")({ sender: {} }, "final", {
+      targetWindow: "BAD",
+      targetProcessId: 99,
+    }),
+    { success: false, pasted: false }
+  );
+  assert.equal(options.targetWindow, "1AB");
+  assert.equal(options.targetProcessId, 42);
+  assert.equal(options.targetProcessStarted, "123456");
 });

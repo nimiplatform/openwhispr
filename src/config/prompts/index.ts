@@ -7,6 +7,8 @@ import { PROMPT_KINDS, PLAIN_TEXT_RESPONSE_SUFFIX, type PromptKind } from "./reg
 export { PROMPT_KINDS, PROMPT_KIND_LIST, type PromptKind } from "./registry";
 
 export interface ResolvePromptOptions {
+  /** An explicit unsaved draft; never writes the persisted custom prompt. */
+  template?: string;
   agentName: string | null;
   uiLanguage?: string;
   language?: string;
@@ -15,7 +17,7 @@ export interface ResolvePromptOptions {
 }
 
 export function resolvePrompt(kind: PromptKind, opts: ResolvePromptOptions): string {
-  const custom = useSettingsStore.getState().customPrompts[kind];
+  const custom = opts.template ?? useSettingsStore.getState().customPrompts[kind];
   const template = custom || getDefaultPromptText(kind, opts.uiLanguage);
   return applySubstitutions(template, opts);
 }

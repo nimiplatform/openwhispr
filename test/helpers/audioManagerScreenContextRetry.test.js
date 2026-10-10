@@ -46,7 +46,7 @@ async function loadAudioManager(t, { cachePrefix, settingsKey, reasoningKey }) {
   };
 }
 
-test("a selection edit survives a rejected screenshot via the text-only retry", async (t) => {
+test("a rejected selection image fails without silently retrying a different text-only task", async (t) => {
   const { window, setProcessText, createManager } = await loadAudioManager(t, {
     cachePrefix: "openwhispr-sc-retry-test-",
     settingsKey: "__scRetrySettings",
@@ -72,59 +72,67 @@ test("a selection edit survives a rejected screenshot via the text-only retry", 
   const notices = [];
   const manager = createManager({ onError: (notice) => notices.push(notice) });
 
-  const replacement = await manager.processAgentCommand("make it shorter", "gpt-5", "Agent", {
-    systemPrompt: "BASE PROMPT SCREEN_SUFFIX_SENTINEL",
-    textOnlySystemPrompt: "BASE PROMPT",
-    screenContext: { mediaType: "image/jpeg", data: "x" },
-    selectionEditReachable: true,
-  });
-
-  assert.equal(replacement, "shorter text");
-  assert.equal(processTextCalls.length, 2);
-
-  const [first, retry] = processTextCalls;
-  // Both calls carry the same selection-edit user payload and marker.
-  assert.equal(retry.text, first.text);
-  const firstMarker = first.config.systemPrompt.match(MARKER_RE)?.[0];
-  const retryMarker = retry.config.systemPrompt.match(MARKER_RE)?.[0];
-  assert.ok(firstMarker, "primary prompt must carry the completion marker");
-  assert.equal(retryMarker, firstMarker);
-  // The retry drops the image and its prompt suffix, nothing else.
-  assert.equal(retry.config.screenContext, undefined);
-  assert.equal(retry.config.textOnlySystemPrompt, undefined);
-  assert.ok(retry.config.systemPrompt.includes("SELECTION EDITING MODE"));
-  assert.ok(!retry.config.systemPrompt.includes("SCREEN_SUFFIX_SENTINEL"));
-  assert.equal(retry.config.requireCompleteOutput, true);
-
-  assert.deepEqual(
-    notices.map((n) => n.code),
-    ["SCREEN_CONTEXT_SKIPPED"]
+  await assert.rejects(
+    manager.processAgentCommand("make it shorter", "", "Agent", {
+      systemPrompt: "BASE PROMPT SCREEN_SUFFIX_SENTINEL",
+      screenContext: { mediaType: "image/jpeg", data: "x" },
+      selectionEditReachable: true,
+    }),
+    { code: "SELECTION_EDIT_REASONING_FAILED" }
   );
+  assert.equal(processTextCalls.length, 1);
+  assert.ok(processTextCalls[0].config.systemPrompt.match(MARKER_RE));
+  assert.ok(processTextCalls[0].config.systemPrompt.includes("SCREEN_SUFFIX_SENTINEL"));
+  assert.equal(processTextCalls[0].config.requireCompleteOutput, true);
+  assert.equal(manager.pendingSelectionEdit, undefined);
+  assert.deepEqual(notices, []);
 });
 
-test("the text-only retry swaps in the pre-built prompt verbatim", async (t) => {
+test("canceled or invalidated image requests never retry or create a late selection write", async (t) => {
   const { setProcessText, createManager } = await loadAudioManager(t, {
     cachePrefix: "openwhispr-sc-retry-direct-test-",
     settingsKey: "__scRetryDirectSettings",
     reasoningKey: "__scRetryDirectProcessText",
   });
 
-  const prompts = [];
-  setProcessText(async (text, model, agentName, config) => {
-    prompts.push(config.systemPrompt);
-    if (config.screenContext) throw new Error("image too large");
-    return "done";
-  });
-
-  const manager = createManager({ onError: () => {} });
-  const result = await manager.processWithReasoningModel("hello", "gpt-5", "Agent", {
-    systemPrompt: "BASE PROMPT WITH SUFFIX",
-    textOnlySystemPrompt: "BASE PROMPT",
-    screenContext: { mediaType: "image/jpeg", data: "x" },
-  });
-
-  assert.equal(result, "done");
-  assert.deepEqual(prompts, ["BASE PROMPT WITH SUFFIX", "BASE PROMPT"]);
+  for (const mode of ["abort", "session", "late-success", "retired-generation"]) {
+    const controller = new AbortController();
+    let calls = 0;
+    let retired = false;
+    setProcessText(async (_text, _model, _agent, config) => {
+      calls++;
+      if (mode === "abort") controller.abort();
+      if (mode === "session")
+        throw Object.assign(new Error("session invalid"), { code: "NIMI_SESSION_UNAVAILABLE" });
+      if (mode === "retired-generation") retired = true;
+      if (mode === "late-success") controller.abort();
+      if (mode === "abort") throw new Error("image operation stopped");
+      return `late text${config.systemPrompt.match(MARKER_RE)?.[0]}`;
+    });
+    const manager = createManager({
+      consumeSelectionCapture: async () => ({
+        status: "selected",
+        text: "original",
+        sessionId: "s1",
+      }),
+    });
+    await assert.rejects(
+      manager.processAgentCommand(
+        "edit",
+        "",
+        "Agent",
+        {
+          signal: controller.signal,
+          screenContext: { mediaType: "image/jpeg", data: "x" },
+          selectionEditReachable: true,
+        },
+        () => retired
+      ),
+      { code: "SELECTION_EDIT_REASONING_FAILED" }
+    );
+    assert.equal(calls, 1, mode);
+    assert.equal(manager.pendingSelectionEdit, undefined, mode);
+  }
 });
 
 test("a non-voice-agent recording clears a stale screen capture", async (t) => {

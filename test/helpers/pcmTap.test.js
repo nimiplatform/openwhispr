@@ -223,3 +223,15 @@ test("close discards the copy and releases the context", async (t) => {
   assert.equal(contexts[0].closed, 1);
   assert.equal(await tap.stop(), null);
 });
+
+
+test("live preview observation continues after archive budget and a failed observer cannot lose recorded PCM", async t => {
+  const { nodes } = installFakes(t); const { PcmTap } = await load();
+  const tap = new PcmTap("worklet", { maxSamples: 2 }); await tap._ready;
+  const received = []; tap.onPcm = samples => received.push(Array.from(samples));
+  nodes[0].reply(new Int16Array([1, 2, 3]).buffer); nodes[0].reply(new Int16Array([4]).buffer);
+  assert.deepEqual(received, [[1, 2, 3], [4]]); assert.equal(tap._dropped, true); tap.close();
+  const safe = new PcmTap("worklet"); await safe._ready;
+  safe.onPcm = () => { throw new Error("declared-preview-failure"); };
+  safe._onMessage(new Int16Array([5, 6]).buffer); assert.equal(safe._samples, 2); assert.equal(safe.onPcm, null); safe.close();
+});

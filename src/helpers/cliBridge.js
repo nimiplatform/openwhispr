@@ -217,8 +217,23 @@ class CliBridge {
       }
     }
 
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const disconnected = () => {
+      if (!res.writableEnded) abort();
+    };
+    req.once("aborted", abort);
+    res.once("close", disconnected);
     try {
-      const result = await route.handler({ params: route.params, query: url.searchParams, body });
+      if (req.aborted || res.destroyed) controller.abort();
+      controller.signal.throwIfAborted();
+      const result = await route.handler({
+        params: route.params,
+        query: url.searchParams,
+        body,
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
       if (result === NO_CONTENT) {
         sendNoContent(res);
         return;
@@ -226,11 +241,25 @@ class CliBridge {
       const status = route.status || 200;
       sendJson(res, status, result);
     } catch (err) {
-      this._sendError(res, err);
+      if (!res.destroyed && !res.writableEnded) this._sendError(res, err);
+    } finally {
+      req.removeListener("aborted", abort);
+      res.removeListener("close", disconnected);
     }
   }
 
   _sendError(res, err) {
+    if (
+      typeof err.reasonCode === "string" ||
+      (typeof err.code === "string" && err.code.startsWith("NIMI_SESSION_"))
+    ) {
+      sendV1Error(res, 503, err.reasonCode || err.code, err.message);
+      return;
+    }
+    if (typeof err.code === "string" && err.code.startsWith("BUSINESS_AI_POLICY_")) {
+      sendV1Error(res, 403, err.code, err.message);
+      return;
+    }
     if (err.code === "NOT_FOUND") {
       sendV1Error(res, 404, "not_found", err.message);
       return;
@@ -344,33 +373,6 @@ class CliBridge {
 
     // Picks the requested model, or the one the app is set to use, and refuses
     // anything not on disk so the engines' own errors stay genuine failures.
-    const requireLocalModel = (models, requested) => {
-      if (requested !== undefined && typeof requested !== "string") {
-        const err = new Error("'model' must be a string");
-        err.code = "VALIDATION";
-        throw err;
-      }
-      const match = requested
-        ? models.find((m) => m.model === requested)
-        : models.find((m) => m.default);
-      if (!match) {
-        const err = new Error(
-          requested
-            ? `Unknown model '${requested}'. Available: ${models.map((m) => m.model).join(", ")}`
-            : "No local transcription model is selected. Choose one in OpenWhispr under Settings → Transcription, or pass 'model'."
-        );
-        err.code = "VALIDATION";
-        throw err;
-      }
-      if (!match.downloaded) {
-        const err = new Error(
-          `Model '${match.model}' is not downloaded. Open OpenWhispr and download it under Settings → Transcription.`
-        );
-        err.code = "VALIDATION";
-        throw err;
-      }
-      return match;
-    };
 
     const requireSuccess = (result, message) => {
       if (!result?.success) {
@@ -524,27 +526,33 @@ class CliBridge {
           },
         };
       }),
-      exact("GET", "/v1/transcribe/models", () => ({ data: ipc.listLocalTranscriptionModels() })),
-      // The CLI runs on this machine, so it sends a path and the app reads the
-      // file itself: no audio crosses the bridge and the user's downloaded
-      // models do the work.
-      exact("POST", "/v1/transcribe", async ({ body }) => {
+      exact("GET", "/v1/transcribe/models", async ({ signal }) => ({
+        data: await require("./nimiAI").cliTranscriptionSelection(signal),
+      })),
+      // Local callers supply media; the supervised Host uses Nimi AIConfig.
+      exact("POST", "/v1/transcribe", async ({ body, signal }) => {
         const real = requireAudioFile(body?.path);
-        const { provider, model } = requireLocalModel(
-          ipc.listLocalTranscriptionModels(),
-          body?.model
-        );
+        if (body && Object.keys(body).some((key) => !["path", "language"].includes(key)))
+          throw Object.assign(
+            new Error("Select transcription models in Nimi; provide only path and language"),
+            { code: "VALIDATION" }
+          );
+        if (body?.language !== undefined && typeof body.language !== "string")
+          throw Object.assign(new Error("'language' must be a string"), { code: "VALIDATION" });
         const language =
           typeof body?.language === "string" && body.language ? body.language : undefined;
         ipc.approveAudioPath(real);
-        const result = await ipc.transcribeLocalFile(real, { provider, model, language });
+        const result = await require("./nimiAI").transcribeCliFile(
+          { filePath: real, language },
+          signal
+        );
         if (!result?.success) {
           if (result?.code === "NO_SPEECH_DETECTED" || result?.message === "No audio detected") {
-            return { data: { text: "", provider, model, warning: "No speech detected" } };
+            return { data: { text: "", warning: "No speech detected" } };
           }
-          throw new Error(result?.error || result?.message || "Local transcription failed");
+          throw new Error(result?.error || result?.message || "Nimi transcription failed");
         }
-        return { data: { text: result.text, provider, model } };
+        return { data: { text: result.text } };
       }),
       exact("GET", "/v1/transcriptions/list", ({ query }) => {
         const limit = parsePositiveIntQuery(query, "limit", 50);

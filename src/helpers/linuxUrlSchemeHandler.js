@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { execFileSync } = require("child_process");
-const { quoteExecPath, resolveExecutablePath } = require("./linuxAutostart");
+const { quoteExecPath, resolveExecutablePath } = require("./linuxLaunchCommand");
 
 const XDG_TOOL_TIMEOUT_MS = 3000;
 const PACKAGED_DESKTOP_FILE = "open-whispr.desktop";

@@ -5,6 +5,8 @@ module.exports = [
   {
     ignores: [
       "dist/**",
+      "dist-electron/**",
+      ".nimi/local/**",
       "node_modules/**",
       "src/dist/**",
       "*.min.js",
@@ -13,9 +15,9 @@ module.exports = [
       "src/**", // src has its own config
     ],
   },
-  // Main process files (CommonJS)
+  // Node source files; the supervised Host and build scripts use ESM below.
   {
-    files: ["**/*.js"],
+    files: ["**/*.{js,cjs,mjs}"],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "commonjs",
@@ -40,5 +42,9 @@ module.exports = [
       "prefer-const": "off",
       "no-var": "off",
     },
+  },
+  {
+    files: ["**/*.mjs"],
+    languageOptions: { ecmaVersion: "latest", sourceType: "module" },
   },
 ];

@@ -63,11 +63,6 @@ export function refreshManagedEnterpriseIdentity(
   void enterprise.refresh(accountId, workspaceId, authGeneration);
 }
 
-function refreshForWorkspace(workspaceId: string | null): void {
-  const { accountId, authGeneration } = usePolicyStore.getState();
-  refreshManagedEnterpriseIdentity(accountId, authGeneration, workspaceId);
-}
-
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaces: [],
   loaded: false,
@@ -82,7 +77,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // land under the new one.
     membersRequestSeq++;
     set({ activeWorkspaceId: id, members: [] });
-    refreshForWorkspace(id);
   },
 
   resetForAccountChange: () => {
@@ -108,38 +102,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const generation = accountGeneration;
     set({ loading: true });
     let request!: Promise<void>;
-    request = (async () => {
-      try {
-        const workspaces = await WorkspacesService.list();
-        if (generation !== accountGeneration) return;
-        const activeId = get().activeWorkspaceId;
-        const stillValid = activeId && workspaces.some((w) => w.id === activeId);
-        const resolvedActiveId = stillValid
-          ? activeId
-          : workspaces.length === 1
-            ? workspaces[0].id
-            : null;
-        set({
-          workspaces,
-          loaded: true,
-          loading: false,
-          error: false,
-          activeWorkspaceId: resolvedActiveId,
-        });
-        if (resolvedActiveId !== activeId) writeActiveWorkspaceId(resolvedActiveId);
-        refreshForWorkspace(resolvedActiveId);
-      } catch (error) {
-        if (generation !== accountGeneration) return;
-        logger.error(
-          "Failed to load workspaces",
-          { error: (error as Error).message },
-          "workspaces"
-        );
-        set({ loading: false, loaded: true, error: true });
-      } finally {
-        if (refreshPromise === request) refreshPromise = null;
-      }
-    })();
+
     refreshPromise = request;
     return request;
   },

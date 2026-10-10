@@ -169,7 +169,11 @@ test(
     assert.deepEqual(registerLinuxUrlSchemeHandler("openwhispr", []), { registered: true });
 
     const wrapper = path.join(root, "install", "open-whispr");
-    assert.equal(execLine(applicationsDir), `${wrapper} %U`);
+    // The fixture lives on the test host; Windows temporary paths require the
+    // desktop-entry backslash escaping even though this carrier targets Linux.
+    const argument =
+      process.platform === "win32" ? `"${wrapper.replace(/\\/g, "\\\\\\\\")}"` : wrapper;
+    assert.equal(execLine(applicationsDir), `${argument} %U`);
   })
 );
 

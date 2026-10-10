@@ -8,7 +8,6 @@ import type { QueueItem } from "../../stores/batchQueueStore";
 
 interface BatchQueueViewProps {
   queue: QueueItem[];
-  byokMaxFileSizeMb: number;
   completedCount: number;
   failedCount: number;
   totalCount: number;
@@ -35,17 +34,20 @@ function StatusIcon({ status }: { status: QueueItem["status"] }) {
 interface BatchWarningIndicatorProps {
   transcriptionWarning: boolean;
   diarizationWarning: boolean;
+  speakerMatchingWarning?: boolean;
   t: (key: string) => string;
 }
 
 export function BatchWarningIndicator({
   transcriptionWarning,
   diarizationWarning,
+  speakerMatchingWarning,
   t,
 }: BatchWarningIndicatorProps): JSX.Element | null {
   const messages: string[] = [];
   if (transcriptionWarning) messages.push(t("notes.upload.partialWarning"));
   if (diarizationWarning) messages.push(t("notes.upload.diarizationWarning"));
+  if (speakerMatchingWarning) messages.push(t("nimi.speakerMatchingIncomplete"));
   if (messages.length === 0) return null;
 
   const label = messages.join(" ");
@@ -58,7 +60,6 @@ export function BatchWarningIndicator({
 
 export default function BatchQueueView({
   queue,
-  byokMaxFileSizeMb,
   completedCount,
   failedCount,
   totalCount,
@@ -142,6 +143,7 @@ export default function BatchQueueView({
               <BatchWarningIndicator
                 transcriptionWarning={!!item.warning}
                 diarizationWarning={!!item.diarizationWarning}
+                speakerMatchingWarning={!!item.speakerMatchingWarning}
                 t={t}
               />
             )}
@@ -161,12 +163,10 @@ export default function BatchQueueView({
                 className="max-w-40 truncate text-xs text-destructive"
                 title={t(`notes.upload.${item.error}`, {
                   defaultValue: item.error,
-                  size: byokMaxFileSizeMb,
                 })}
               >
                 {t(`notes.upload.${item.error}`, {
                   defaultValue: item.error,
-                  size: byokMaxFileSizeMb,
                 })}
               </span>
             )}

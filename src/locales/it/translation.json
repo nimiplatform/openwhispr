@@ -690,6 +690,9 @@
       "retryTranscription": "Ritrascrivi",
       "retrying": "Ritrascrizione in corso…",
       "retrySuccess": "Trascrizione aggiornata",
+      "recordedFailureReason": "Motivo dell’errore registrato: {{reason}}",
+      "retryNotificationWarning": "Trascrizione salvata; alcune finestre non sono state notificate.",
+      "retryEditingWarning": "Trascrizione salvata; alcune operazioni sul testo non sono state completate.",
       "retryError": "Ritrascrizione non riuscita",
       "audioNotFound": "File audio non trovato o scaduto",
       "noAiProcessing": "Nessuna elaborazione IA applicata a questa trascrizione",
@@ -902,7 +905,8 @@
         "agentUnavailable": "Assistente non disponibile",
         "screenContextSkipped": "Contesto dello schermo ignorato",
         "dailyLimitReached": "Limite giornaliero raggiunto",
-        "providerRateLimited": "Limite di velocità del provider"
+        "providerRateLimited": "Limite di velocità del provider",
+        "cancellationUnconfirmed": "Annullamento non confermato"
       },
       "fallback": {
         "title": "Modalità fallback",
@@ -984,7 +988,8 @@
       },
       "pasteFailed": {
         "title": "Impossibile incollare automaticamente"
-      }
+      },
+      "dictionaryPromptTooLong": "Il dizionario di dettatura è troppo lungo. Riduci le voci e riprova."
     },
     "clipboard": {
       "pasteFailed": {
@@ -3073,9 +3078,9 @@
       "transcriptionFailed": "Trascrizione non riuscita",
       "errorOccurred": "Si è verificato un errore",
       "noSpeechDetected": "Nessun parlato rilevato in questo audio.",
-      "noProviderTitle": "Nessun provider di trascrizione configurato",
-      "noProviderDescription": "Aggiungi una chiave API o scarica un modello locale per iniziare a trascrivere.",
-      "noProviderAction": "Apri impostazioni di trascrizione",
+      "noProviderTitle": "La trascrizione Nimi non è disponibile",
+      "noProviderDescription": "Scegli un modello di trascrizione disponibile in Nimi. Se la sessione è scaduta, accedi a Nimi e riprova.",
+      "noProviderAction": "Apri modelli Nimi",
       "fileTooLarge": "Questo file supera il limite di 500 MB.",
       "largeFileNote": "I file di grandi dimensioni vengono suddivisi e trascritti in parallelo.",
       "chunkProgress": "Trascrizione parte {{completed}} di {{total}}...",
@@ -3149,7 +3154,11 @@
       "systemAudioQuiet": {
         "title": "L'audio della riunione è diventato silenzioso",
         "description": "Non si sente nessuno da qualche minuto. Se la chiamata è ancora in corso, controlla il dispositivo di uscita audio."
-      }
+      },
+      "finishing": "Completamento della trascrizione e salvataggio…",
+      "cancelFinishing": "Interrompi elaborazione e conserva registrazione",
+      "saved": "Trascrizione e registrazione salvate",
+      "canceled": "Elaborazione annullata; registrazione conservata"
     },
     "meetingPill": {
       "returnToNote": "Torna alla registrazione",
@@ -3238,7 +3247,7 @@
         }
       },
       "errors": {
-        "noModel": "Nessun modello IA selezionato. Configurane uno nelle Impostazioni.",
+        "noModel": "Nessun modello di testo Nimi disponibile. Scegline uno nelle impostazioni dei modelli Nimi.",
         "actionFailed": "Azione non riuscita",
         "noEndpoint": "Nessun URL del server self-hosted impostato. Configurane uno nelle Impostazioni.",
         "outputTruncated": "Il modello AI ha esaurito lo spazio prima di finire, quindi la nota è rimasta com'era.",
@@ -4851,6 +4860,68 @@
     "details": {
       "provider": "Provider",
       "requestId": "ID richiesta"
+    }
+  },
+  "nimi": {
+    "transcriptionSpeakerOptionsUnsupported": "La richiesta di trascrizione è stata rifiutata. L’attività richiede intervalli dei parlanti. Controlla la configurazione Nimi, il formato audio, la lingua, il vocabolario e le altre opzioni. Le registrazioni salvate si aprono dal file originale della nota. Motivo: {{reason}}",
+    "transcriptionTimingUnsupported": "La richiesta di trascrizione è stata rifiutata. L’attività richiede informazioni temporali. Controlla la configurazione Nimi, il formato audio, la lingua, il vocabolario e le altre opzioni prima di riprovare la registrazione salvata. Motivo: {{reason}}",
+    "meetingModelRequirements": "Le riunioni richiedono tempi reali delle parole. Per distinguere le voci, scegli in Nimi un modello che supporti anche la separazione dei parlanti. La disponibilità non garantisce queste opzioni.",
+    "sessionConnectionTitle": "Connessione Nimi non disponibile",
+    "sessionConnectionUnavailable": "L’app non ha potuto connettersi a Nimi. Controlla questa app in Nimi e riprova. Motivo: {{reason}}",
+    "sessionScopeChanged": "L’account è cambiato durante la preparazione. Avvia una nuova attività.",
+    "checkConnection": "Verifica connessione",
+    "sessionRecordingRecovery": "Se la registrazione è stata conservata, apri Home e scegli Trascrivi di nuovo dal suo menu Altre azioni.",
+    "pasteNotDelivered": "Il testo non è stato inserito",
+    "pasteRecovery": "Torna all’editor originale e riprova, oppure incolla manualmente il testo copiato.",
+    "pasteRecoveryCopyFailed": "Anche la copia non è riuscita. Copia il testo qui sotto e incollalo manualmente.",
+    "startupUnavailable": "Questa registrazione di sviluppo non supporta l’avvio automatico. Apri l’app da Nimi.",
+    "desktopNotReady": "Avvia Nimi Desktop, accedi e riprova.",
+    "modelsTitle": "Modelli Nimi",
+    "modelsDescription": "Scegli i modelli vocali, di testo e di embedding in Nimi. Le credenziali rimangono in Nimi.",
+    "signInRequired": "Accedi a Nimi Desktop per configurare e usare l’IA. Puoi configurare dispositivi e scorciatoie ora.",
+    "openNimi": "Apri Nimi",
+    "retry": "Riprova",
+    "deferMicrophone": "Usa le note ora e attiva il microfono più tardi",
+    "microphoneRequired": "Per registrare serve il permesso del microfono. Le note sono già disponibili.",
+    "microphoneSettings": "Impostazioni microfono",
+    "speakerLabelsPending": "Le etichette dei parlanti sono ancora in integrazione con Nimi. La trascrizione senza etichette è separata.",
+    "originalSource": "File originale",
+    "searchSemantic": "ricerca semantica",
+    "searchKeyword": "ricerca per parole chiave",
+    "searchScope": " in {{space}}",
+    "searchEmpty": "Nessuna nota trovata per «{{query}}»{{scope}} ({{method}})",
+    "searchResults": "Trovate {{count}} note per «{{query}}»{{scope}} ({{method}})",
+    "searchUnavailable": "La ricerca non è disponibile. Riprova.",
+    "previewUnavailableTitle": "L’anteprima dal vivo si è fermata",
+    "previewUnavailableDescription": "La registrazione continua. Quando la interrompi, Nimi proverà a trascrivere l’intera registrazione.",
+    "speakerRepresentations": "Impronte vocali",
+    "speakerMatchingIncomplete": "Alcune voci non sono state riconosciute. Gli intervalli originali sono salvati. Controlla i nomi manualmente o il modello vocale in Nimi.",
+    "microphoneUnknown": "Il permesso del microfono non è confermato. Controlla le impostazioni di sistema; le note sono già disponibili.",
+    "restartTitle": "Riavvia app",
+    "restartDescription": "Nimi riaprirà questa app. Interrompi prima la registrazione e completa l’elaborazione.",
+    "restartBusy": "Interrompi la registrazione e completa l’elaborazione prima di riavviare.",
+    "businessAIManaged": "Non è ancora possibile verificare le restrizioni IA dello spazio per Nimi. L’IA non è disponibile per questo account gestito; note e funzioni senza IA restano disponibili.",
+    "updatesManaged": "Nimi gestisce gli aggiornamenti. Questa registrazione di sviluppo non ha un pacchetto installato da aggiornare.",
+    "appDataTitle": "Dati dell’app",
+    "appDataDescription": "Gestisci impostazioni, note, cronologia, registrazioni e indice di ricerca di questa app.",
+    "appDataReset": "Elimina impostazioni, note, cronologia, registrazioni e indice locali di questa app. Modelli e credenziali Nimi restano conservati.",
+    "updatesOpen": "Apri gestione app Nimi",
+    "businessAIUnresolved": "La policy dello spazio non è risolta. Riprova dopo la conferma dell’account; le note restano disponibili.",
+    "recordingMedia": {
+      "recording": "Registrazione {{number}}",
+      "mic": "Microfono",
+      "system": "Audio di sistema",
+      "seconds": "{{seconds}} s",
+      "status": {
+        "processing": "In elaborazione",
+        "completed": "Completata",
+        "canceled": "Annullata",
+        "failed": "Non riuscita",
+        "unknown": "Stato sconosciuto"
+      },
+      "openFailed": "File multimediale non trovato",
+      "checkFile": "Verifica che il file originale sia ancora su questo dispositivo.",
+      "unavailable": "Nessun file originale disponibile."
     }
   }
 }

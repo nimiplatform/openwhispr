@@ -12,25 +12,38 @@ const cleanupHandler = ipcHandlersSource.match(
   /ipcMain\.handle\("cleanup-app", async \(event\) => \{([\s\S]*?)ipcMain\.handle\("update-hotkey"/
 );
 
-test("explicit device cleanup covers models, credentials, caches, and browser settings", () => {
+test("explicit device cleanup covers this App's media, credentials and browser settings", () => {
   assert.ok(cleanupHandler, "cleanup-app handler is present");
   const source = cleanupHandler[1];
 
   for (const operation of [
-    "deleteAllParakeetModels",
-    "diarizationManager?.deleteModels",
-    "modelManager.deleteAllModels",
+    "eraseAppOwnedImports",
+    "audioStorageManager.deleteAllAudio",
     "environmentManager?.clearAllPersistedData",
     "tokenStore.clear",
     "clearStorageData",
     "clearCache",
-    "setAutoStartEnabled(false)",
   ]) {
     assert.ok(source.includes(operation), `device cleanup includes ${operation}`);
   }
 
-  for (const cacheName of ["embedding-models", "qdrant-data", "qdrant-data-dev", "yt-dlp"]) {
-    assert.ok(source.includes(`"${cacheName}"`), `device cleanup removes ${cacheName}`);
+  for (const retiredOperation of [
+    "deleteAllParakeetModels",
+    "diarizationManager?.deleteModels",
+    "modelManager.deleteAllModels",
+    "homeCacheRoot",
+    '"embedding-models"',
+    '"qdrant-data"',
+    '"qdrant-data-dev"',
+    '"yt-dlp"',
+    '"llama-cpp"',
+    '"bin"',
+    '"setAutoStartEnabled"',
+  ]) {
+    assert.ok(
+      !source.includes(retiredOperation),
+      `device cleanup preserves upstream data: ${retiredOperation}`
+    );
   }
 
   assert.ok(
@@ -62,7 +75,7 @@ test("device cleanup revokes every stored connector login before the files and r
 
   for (const later of [
     "this.databaseManager?.db?.close()",
-    'for (const directoryName of ["bin", "llama-cpp", "connectors"])',
+    'for (const directoryName of ["connectors"])',
   ]) {
     const at = source.indexOf(later);
     assert.ok(at >= 0, `device cleanup still contains ${later}`);

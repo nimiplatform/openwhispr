@@ -1,243 +1,194 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const WORKER_SOURCE = fs.readFileSync(path.resolve("src/workers/onnxWorker.js"), "utf8");
-const SPEAKER_SOURCE = fs.readFileSync(path.resolve("src/helpers/speakerEmbeddings.js"), "utf8");
-
-const SAMPLES = new Float32Array(16000 * 2).fill(0.1);
-
-function createTimers() {
-  const timers = [];
-  return {
-    timers,
-    active: () => timers.filter((timer) => !timer.cleared && !timer.fired),
-    setTimeout(callback) {
-      const timer = { callback, cleared: false, fired: false, unref() {} };
-      timers.push(timer);
-      return timer;
-    },
-    clearTimeout(timer) {
-      if (timer) timer.cleared = true;
-    },
-    fire(timer) {
-      timer.fired = true;
-      timer.callback();
-    },
-  };
-}
-
-function createHarness() {
-  const events = [];
-  const logs = [];
-  const timers = createTimers();
-  let releaseInference;
-  let gateInference = false;
-  const nativeSession = (name) => ({
-    inputNames: ["input"],
-    async run() {
-      events.push(`${name}.run`);
-      if (gateInference) {
-        await new Promise((resolve) => {
-          releaseInference = resolve;
-        });
-      }
-      events.push(`${name}.done`);
-      return { output: { data: new Float32Array(512).fill(1) } };
-    },
-    async release() {
-      events.push(`${name}.release`);
-    },
-  });
-  const workerContext = vm.createContext({
-    require(name) {
-      if (name === "onnxruntime-node")
+const Module = require("node:module");
+const originalLoad = Module._load;
+Module._load = function (request, parent, isMain) {
+  if (request === "./tokenStore")
+    return {
+      getState: () => ({ token: null, generation: 0 }),
+      getGeneration: () => 0,
+      subscribe() {},
+    };
+  if (request === "./debugLogger") return { warn() {}, debug() {} };
+  return originalLoad.call(this, request, parent, isMain);
+};
+const { SpeakerEmbeddings } = require("../../src/helpers/speakerEmbeddings");
+Module._load = originalLoad;
+const vectors = require("../../src/helpers/speakerRepresentation");
+const actualFixture = {
+  vector: [0.12345678901234, -0.25, 0.75],
+  spaceId: "declared-fixture-space",
+};
+function harness() {
+  const calls = [];
+  let selected = "loadout-A",
+    revision = "1",
+    submitGate,
+    result = actualFixture;
+  const services = {
+    aiConfig: {
+      async get() {
         return {
-          InferenceSession: { create: async () => nativeSession("speaker") },
-          Tensor: class {},
+          revision,
+          config: { capabilities: [{ capabilityContract: "audio.speaker.embed", route: "local" }] },
+          effectiveSelections: [
+            {
+              capabilityContract: "audio.speaker.embed",
+              state: "ready",
+              resource: { oneofKind: "local", local: { loadoutRef: selected } },
+            },
+          ],
         };
-      return require(name);
+      },
     },
-    process: { env: {}, on() {}, parentPort: { once() {} } },
-    setImmediate,
-  });
-  vm.runInContext(WORKER_SOURCE, workerContext);
-  const dispatch = vm.runInContext("dispatch", workerContext);
-  const client = {
-    generation: 0,
-    failNext: null,
-    async request(method, payload) {
-      events.push(method);
-      if (this.failNext === method) {
-        this.failNext = null;
-        throw new Error("worker unavailable");
-      }
-      const { reply } = await dispatch({ id: 1, method, payload });
-      if (reply.error) throw new Error(reply.error.message);
-      return reply.result;
-    },
-    async releaseIfIdle() {
-      events.push("releaseIfIdle");
-      return true;
+    ai: {
+      scenarioJobs: {
+        async submit(spec, options) {
+          calls.push(["submit", spec, options]);
+          if (submitGate) await submitGate;
+          return { job: { jobId: "speaker-test-job", status: "queued" } };
+        },
+        async get(id) {
+          calls.push(["get", id]);
+          return { job: { jobId: id, status: "completed", speakerEmbedding: result } };
+        },
+        async cancel(id) {
+          calls.push(["cancel", id]);
+        },
+        async subscribe(id) {
+          calls.push(["subscribe", id]);
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield { job: { jobId: id, status: "completed" } };
+            },
+            async cancel() {
+              calls.push(["close"]);
+            },
+          };
+        },
+      },
     },
   };
-  const context = vm.createContext({
-    module: { exports: {} },
-    process: {},
-    setTimeout: timers.setTimeout,
-    clearTimeout: timers.clearTimeout,
-    require(name) {
-      if (name === "fs") return { existsSync: () => true };
-      if (name === "./debugLogger")
-        return Object.fromEntries(
-          ["debug", "warn"].map((level) => [
-            level,
-            (message, meta) => logs.push({ level, message, meta }),
-          ])
-        );
-      if (name === "./modelDirUtils") return { getModelsDirForService: () => "/models" };
-      if (name === "./onnxWorkerClient") return client;
-      return require(name);
-    },
-  });
-  vm.runInContext(SPEAKER_SOURCE, context);
+  const owner = new SpeakerEmbeddings();
+  owner.bind(services);
   return {
-    speaker: context.module.exports,
-    client,
-    events,
-    logs,
-    timers,
-    gateInference() {
-      gateInference = true;
+    owner,
+    calls,
+    services,
+    setSelection(value) {
+      selected = value;
     },
-    releaseInference() {
-      gateInference = false;
-      releaseInference();
+    setRevision(value) {
+      revision = value;
+    },
+    setGate(value) {
+      submitGate = value;
+    },
+    setResult(value) {
+      result = value;
     },
   };
 }
-
-async function flush() {
-  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
-}
-
-test("an extract arms an idle unload that releases the speaker session, then the worker", async () => {
-  const h = createHarness();
-  assert.ok(await h.speaker.extractEmbeddingFromSamples(SAMPLES));
-  const [timer] = h.timers.active();
-  h.timers.fire(timer);
-  await flush();
-  const { sessions } = await h.client.request("ping", {});
-  assert.equal(sessions.speaker, false);
-  assert.ok(h.events.indexOf("speaker.release") < h.events.indexOf("releaseIfIdle"));
+const samples = () => Float32Array.from({ length: 16000 * 10 }, (_, i) => Math.sin(i / 10) * 0.3);
+test("original float samples reach the bounded public speaker Job and actual persisted vector is preserved", async () => {
+  const h = harness(),
+    source = samples();
+  const result = await h.owner.extractEmbeddingFromSamples(source);
+  assert.deepEqual(result, actualFixture);
+  const [, spec, options] = h.calls[0];
+  assert.equal(spec.type, "audio-speaker-embed");
+  assert.equal(spec.mimeType, "audio/wav");
+  assert.deepEqual(options, { timeoutMs: 120000 });
+  const wav = spec.audioSource.bytes;
+  assert.equal(wav.readUInt16LE(20), 3);
+  assert.equal(wav.length, 44 + 16000 * 8 * 4);
+  assert.equal(wav.readFloatLE(44), source[16000 * 2]);
+  assert.equal(wav.readFloatLE(wav.length - 4), source.at(-1));
+  assert.equal(h.owner.pending.size, 0);
 });
-
-test("each extract restarts the idle window", async () => {
-  const h = createHarness();
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  assert.equal(h.timers.active().length, 1);
+test("public subscription events are summaries and Get supplies the persisted final vector", async () => {
+  const h = harness();
+  let reads = 0;
+  h.services.ai.scenarioJobs.get = async (id) => ({
+    job:
+      ++reads === 1
+        ? { jobId: id, status: "running" }
+        : { jobId: id, status: "completed", speakerEmbedding: actualFixture },
+  });
+  assert.deepEqual(await h.owner.extractEmbeddingFromSamples(samples()), actualFixture);
+  assert.ok(h.calls.some(([method]) => method === "subscribe"));
+  assert.ok(h.calls.some(([method]) => method === "close"));
 });
-
-test("extracts queued together leave a single idle timer", async () => {
-  const h = createHarness();
-  h.gateInference();
-  const first = h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  const second = h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  await flush();
-  h.releaseInference();
-  await Promise.all([first, second]);
-  assert.equal(h.timers.active().length, 1);
-});
-
-test("a failed extract still arms the idle unload", async () => {
-  const h = createHarness();
-  h.client.failNext = "speaker.extract";
-  await assert.rejects(h.speaker.extractEmbeddingFromSamples(SAMPLES), /worker unavailable/);
-  assert.equal(h.timers.active().length, 1);
-});
-
-test("an extract in flight holds off the idle unload until it finishes", async () => {
-  const h = createHarness();
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  h.gateInference();
-  const second = h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  assert.equal(h.timers.active().length, 0);
-  await flush();
-  h.releaseInference();
-  await second;
-  assert.equal(h.timers.active().length, 1);
-  assert.ok(!h.events.includes("speaker.unload"));
-});
-
-test("a segment too short to embed neither loads the model nor arms the timer", async () => {
-  const h = createHarness();
-  assert.equal(await h.speaker.extractEmbeddingFromSamples(new Float32Array(1000)), null);
-  assert.deepEqual(h.events, []);
-  assert.equal(h.timers.timers.length, 0);
-});
-
-test("unload waits for an in-flight extract and a racing extract reloads after release", async () => {
-  const h = createHarness();
-  h.gateInference();
-  const first = h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  await flush();
-  const unloading = h.speaker.unload();
-  const second = h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  await flush();
-  assert.ok(!h.events.includes("speaker.release"));
-  h.releaseInference();
-  await Promise.all([first, unloading, second]);
-  assert.deepEqual(
-    h.events.filter((event) => event.startsWith("speaker")),
-    [
-      "speaker.load",
-      "speaker.extract",
-      "speaker.run",
-      "speaker.done",
-      "speaker.unload",
-      "speaker.release",
-      "speaker.load",
-      "speaker.extract",
-      "speaker.run",
-      "speaker.done",
-    ]
+test("cancel during submission retires the returned Job and cannot deliver an old result", async () => {
+  const h = harness();
+  let release;
+  const controller = new AbortController();
+  h.setGate(
+    new Promise((resolve) => {
+      release = resolve;
+    })
   );
+  const pending = h.owner.extractEmbeddingFromSamples(samples(), { signal: controller.signal });
+  await new Promise(setImmediate);
+  controller.abort();
+  release();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.ok(h.calls.some(([method, id]) => method === "cancel" && id === "speaker-test-job"));
 });
-
-test("worker serializes speaker unload behind in-flight native inference", async () => {
-  const h = createHarness();
-  await h.client.request("speaker.load", { modelPath: "speaker" });
-  h.gateInference();
-  const extracting = h.client.request("speaker.extract", { samplesBuffer: SAMPLES.buffer });
-  await flush();
-  const unloading = h.client.request("speaker.unload", {});
-  await flush();
-  assert.ok(!h.events.includes("speaker.release"));
-  h.releaseInference();
-  await Promise.all([extracting, unloading]);
-  assert.ok(h.events.indexOf("speaker.done") < h.events.indexOf("speaker.release"));
+test("Host invalidation and business ABA generations refuse late vectors", async () => {
+  for (const change of [
+    (h) => h.owner.invalidate(),
+    (h) => {
+      h.generation++;
+    },
+  ]) {
+    const h = harness();
+    h.generation = 0;
+    h.owner.getAuthGeneration = () => h.generation;
+    let release;
+    h.setGate(
+      new Promise((resolve) => {
+        release = resolve;
+      })
+    );
+    const pending = h.owner.extractEmbeddingFromSamples(samples());
+    await new Promise(setImmediate);
+    change(h);
+    release();
+    await assert.rejects(pending);
+    assert.equal(h.owner.pending.size, 0);
+  }
 });
-
-test("reloads after the shared worker restarts", async () => {
-  const h = createHarness();
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  h.client.generation += 1;
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  assert.equal(h.events.filter((event) => event === "speaker.load").length, 2);
+test("only the speaker execution selection matters, and malformed results do not become success", async () => {
+  const h = harness();
+  h.services.ai.scenarioJobs.get = async (id) => {
+    h.setRevision("unrelated-revision");
+    return { job: { jobId: id, status: "completed", speakerEmbedding: actualFixture } };
+  };
+  assert.deepEqual(await h.owner.extractEmbeddingFromSamples(samples()), actualFixture);
+  h.services.ai.scenarioJobs.get = async (id) => {
+    h.setSelection("replacement-loadout");
+    return { job: { jobId: id, status: "completed", speakerEmbedding: actualFixture } };
+  };
+  await assert.rejects(h.owner.extractEmbeddingFromSamples(samples()), {
+    code: "SPEAKER_CONTEXT_CHANGED",
+  });
+  const bad = harness();
+  bad.setResult({ vector: [0, 0], spaceId: "space" });
+  await assert.rejects(bad.owner.extractEmbeddingFromSamples(samples()));
 });
-
-test("a failed idle unload is logged and the next extract still reloads", async () => {
-  const h = createHarness();
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  h.client.failNext = "speaker.unload";
-  h.timers.fire(h.timers.active()[0]);
-  await flush();
-  assert.ok(
-    h.logs.some((entry) => entry.level === "warn" && /idle unload failed/.test(entry.message))
+test("same-size foreign spaces and unmarked historical arrays cannot be compared or averaged", () => {
+  const other = { ...actualFixture, spaceId: "foreign-fixture" };
+  assert.equal(vectors.cosineSimilarity(actualFixture, other), null);
+  assert.equal(vectors.cosineSimilarity(actualFixture, actualFixture.vector), null);
+  assert.throws(() => vectors.computeCentroid([actualFixture, other]));
+  assert.throws(() => vectors.computeCentroid([]));
+  assert.deepEqual(vectors.computeCentroid([actualFixture, actualFixture]), actualFixture);
+  assert.equal(
+    vectors.cosineSimilarity(
+      { vector: [1e300, 1e300], spaceId: "large" },
+      { vector: [1e300, 1e300], spaceId: "large" }
+    ),
+    1
   );
-  await h.speaker.extractEmbeddingFromSamples(SAMPLES);
-  assert.equal(h.events.filter((event) => event === "speaker.load").length, 2);
 });
