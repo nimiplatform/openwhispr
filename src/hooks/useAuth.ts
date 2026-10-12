@@ -128,6 +128,96 @@ export function useAuth() {
     invalidateValidatedAuthContext();
   }, [sessionError]);
 
+  useEffect(() => {
+    if (!sessionResolutionFailed || !resolvedUserId || boundGeneration == null) return;
+    void usePolicyStore.getState().fetchPolicy(resolvedUserId, boundGeneration);
+  }, [boundGeneration, resolvedUserId, sessionResolutionFailed]);
+
+  // Nimi admission does not authenticate an OpenWhispr business account.
+  // Its own resolved session must establish the local scope before the panel
+  // or business sync can proceed, including a fresh guest profile.
+  useEffect(() => {
+    if (
+      boundGeneration == null ||
+      !shouldReconcileAccountScope(
+        isPending,
+        gracePeriodActive,
+        rawIsSignedIn,
+        sessionResolutionFailed
+      )
+    ) {
+      return;
+    }
+    const retryKey = `${boundGeneration}:${resolvedUserId ?? "signed-out"}`;
+    if (isAccountScopeRetryWaiting(retryKey)) return;
+    let cancelled = false;
+    const run = async () => {
+      const { syncService, resetRendererCaches } = await loadAccountDependencies();
+      const scopeResult = await window.electronAPI?.setActiveAccountScope?.(
+        resolvedUserId,
+        boundGeneration
+      );
+      if (!scopeResult?.success) {
+        throw new Error(scopeResult?.error ?? "Could not establish the local account scope");
+      }
+      if (accountScopeRequiresPurge(resolvedUserId)) {
+        markAccountScopePurgeRequired();
+        useSettingsStore.getState().setInsightsSyncEnabled(false);
+        useLeaderboardParticipationStore.getState().reset();
+      }
+      if (accountScopeRequiresReconciliation(resolvedUserId)) {
+        useSettingsStore.getState().setIsSignedIn(false);
+        usePolicyStore.getState().suspendPolicy();
+      }
+      await reconcileAccountScope(resolvedUserId, {
+        purge: async () => {
+          resetRendererCaches();
+          await syncService.purgeTeamSpacesForSignOut();
+          resetRendererCaches();
+        },
+        verify: async () => {
+          const purged = await syncService.verifyTeamSpacesForAccount(boundGeneration);
+          if (purged > 0) resetRendererCaches();
+        },
+      });
+      if (resolvedUserId) {
+        await assertAuthGenerationCurrent(boundGeneration);
+        if (!commitValidatedAuthContext(boundGeneration, resolvedUserId)) {
+          throw new Error("Resolved session no longer matches the active credential");
+        }
+        if (!cancelled) {
+          useSettingsStore.getState().setIsSignedIn(true);
+          void usePolicyStore.getState().fetchPolicy(resolvedUserId, boundGeneration);
+        }
+      } else {
+        invalidateValidatedAuthContext();
+        if (!cancelled) {
+          useSettingsStore.getState().setIsSignedIn(false);
+          usePolicyStore.getState().clearPolicy();
+          useEnterpriseIdentityStore.getState().clear();
+        }
+      }
+      resetAccountScopeRetry();
+    };
+    void run().catch((error) => {
+      invalidateValidatedAuthContext();
+      scheduleAccountScopeRetry(retryKey);
+      logger.error("Account-scoped content reconciliation failed", { error }, "auth");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    accountRevision,
+    authContext.revision,
+    boundGeneration,
+    gracePeriodActive,
+    isPending,
+    rawIsSignedIn,
+    resolvedUserId,
+    sessionResolutionFailed,
+  ]);
+
   return {
     isSignedIn,
     isGracePeriodOnly: gracePeriodActive,
