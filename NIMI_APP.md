@@ -2,6 +2,14 @@
 
 ## Release preparation — 2026-10-14
 
+Current delivery: [1.10.5](https://github.com/nimiplatform/openwhispr/releases/tag/v1.10.5)
+is published through the protected tag workflow. Exact package, license, digest
+and build-provenance checks passed. [Registry PR 105](https://github.com/nimiplatform/nimi-app-registry/pull/105)
+passes candidate checks and awaits human admission. Final published bytes are
+downloaded and verified locally. The installed 1.10.4 checks below remain the
+observed business baseline; final-version/Catalog installation and any fresh
+microphone/paste check are not yet claimed.
+
 Local installed-package checks found and fixed two packaging defects: frontend
 dependency exclusions removed modules imported by the Host's Kit entry, and a
 Node-test SQLite rebuild left Electron's rebuild marker stale. Production builds
