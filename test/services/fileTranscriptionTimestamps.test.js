@@ -2,63 +2,80 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createRendererServer, installBrowserGlobals } = require("../lib/rendererTestHarness");
 
-// The upload flows opt into segment timestamps (issue #1095): the flag must
-// reach the BYOK IPC call, and the segments the handler returns must survive
-// transcribeFileWithSpeakers' result spread so saveUploadNote can persist them.
-
-function byokConfig() {
-  return {
-    useLocalWhisper: false,
-    localTranscriptionProvider: "whisper",
-    whisperModel: "base",
-    parakeetModel: "parakeet-tdt-0.6b-v3",
-    isOpenWhisprCloud: false,
-    getApiKey: () => "sk-test",
-    cloudTranscriptionProvider: "openai",
-    cloudTranscriptionBaseUrl: "",
-    cloudTranscriptionModel: "whisper-1",
-    language: "en",
-    transcriptionMode: "providers",
+async function load(t, result) {
+  installBrowserGlobals(t);
+  const calls = [];
+  globalThis.__fileTranscriptionRequest = async (...args) => {
+    calls.push(args);
+    if (result instanceof Error) throw result;
+    return result;
   };
-}
-
-test("timestamps opt-in reaches the BYOK IPC call and segments flow back", async (t) => {
-  const { window } = installBrowserGlobals(t);
+  t.after(() => {
+    delete globalThis.__fileTranscriptionRequest;
+  });
   const vite = await createRendererServer(t, {
-    cachePrefix: "openwhispr-file-timestamps-test-",
+    cachePrefix: "openwhispr-file-nimi-test-",
     mockModules: {
-      "/lib/auth": "export const withSessionRefresh = (fn) => fn();",
+      "/nimiClient":
+        "export const runNimiRequest=(...args)=>globalThis.__fileTranscriptionRequest(...args);",
     },
   });
-  const { transcribeFile, transcribeFileWithSpeakers } = await vite.ssrLoadModule(
-    "/services/fileTranscription.ts"
-  );
+  return { calls, ...(await vite.ssrLoadModule("/services/fileTranscription.ts")) };
+}
 
-  const segments = [{ text: "Hello.", start: 0, end: 2.5 }];
-  let receivedOptions = null;
-  window.electronAPI.transcribeAudioFileByok = async (options) => {
-    receivedOptions = options;
-    return { success: true, text: "Hello.", segments };
+test("timestamps, request identity and cancellation reach the Nimi Host unchanged", async (t) => {
+  const result = {
+    success: true,
+    text: "Hello.",
+    segments: [{ text: "Hello.", start: 0, end: 2.5 }],
+    durationSeconds: 3,
   };
-
-  const direct = await transcribeFile("/tmp/audio.webm", byokConfig(), false, {
-    timestamps: true,
-  });
-  assert.equal(receivedOptions.timestamps, true);
-  assert.deepEqual(direct.segments, segments);
-
-  // Without the opt-in the request stays exactly as before.
-  await transcribeFile("/tmp/audio.webm", byokConfig(), false);
-  assert.equal(receivedOptions.timestamps, undefined);
-
-  const withSpeakers = await transcribeFileWithSpeakers(
-    "/tmp/audio.webm",
-    byokConfig(),
-    { enabled: false, localModelsReady: false, numSpeakers: null },
-    120,
-    { timestamps: true }
+  const h = await load(t, result);
+  const signal = new AbortController().signal;
+  assert.deepEqual(
+    await h.transcribeFile("/tmp/audio.wav", { language: "en" }, false, {
+      requestId: "upload-1",
+      timestamps: true,
+      signal,
+    }),
+    result
   );
-  assert.equal(receivedOptions.timestamps, true);
-  assert.deepEqual(withSpeakers.segments, segments);
-  assert.equal(withSpeakers.durationSeconds, 120);
+  assert.deepEqual(h.calls[0], [
+    "openwhispr.ai.transcribe-file",
+    {
+      requestId: "upload-1",
+      filePath: "/tmp/audio.wav",
+      language: "en",
+      timestamps: true,
+      diarization: false,
+      numSpeakers: null,
+      retainForNote: false,
+    },
+    signal,
+  ]);
+  await h.transcribeFile("/tmp/audio.wav", { language: "en" }, false);
+  assert.equal(h.calls[1][1].timestamps, false);
+  assert.equal(typeof h.calls[1][1].requestId, "string");
+});
+
+test("upload retains Host results and measured timing rather than the renderer duration hint", async (t) => {
+  const result = {
+    success: true,
+    text: "Hello.",
+    durationSeconds: 3,
+    segments: [{ text: "Hello.", start: 0, end: 2.5 }],
+  };
+  const h = await load(t, result);
+  assert.deepEqual(
+    await h.transcribeFileWithSpeakers(
+      "/tmp/audio.wav",
+      { language: "en" },
+      { enabled: false, numSpeakers: null },
+      120,
+      { requestId: "upload-2", timestamps: true }
+    ),
+    result
+  );
+  assert.equal(h.calls[0][1].timestamps, true);
+  assert.equal(h.calls[0][1].retainForNote, true);
 });

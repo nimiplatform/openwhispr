@@ -5,6 +5,7 @@ const Module = require("node:module");
 const { EventEmitter } = require("node:events");
 const childProcess = require("node:child_process");
 const fs = require("node:fs");
+const path = require("node:path");
 
 const managerModulePath = require.resolve("../../src/helpers/linuxKeyManager");
 const originalLoad = Module._load;
@@ -185,26 +186,28 @@ function stubInputDir(
 ) {
   const realReaddir = fs.readdirSync;
   t.mock.method(fs, "readdirSync", (target, ...rest) => {
-    if (String(target) !== "/dev/input") return realReaddir.call(fs, target, ...rest);
+    if (String(target).split(path.sep).join("/") !== "/dev/input")
+      return realReaddir.call(fs, target, ...rest);
     if (!entries) throw listError();
     return entries;
   });
 
   const realAccess = fs.accessSync;
   t.mock.method(fs, "accessSync", (target, ...rest) => {
-    if (!String(target).startsWith("/dev/input/")) return realAccess.call(fs, target, ...rest);
-    if (!readable.includes(String(target))) throw eacces();
+    if (!String(target).split(path.sep).join("/").startsWith("/dev/input/"))
+      return realAccess.call(fs, target, ...rest);
+    if (!readable.includes(String(target).split(path.sep).join("/"))) throw eacces();
   });
 
   // Every /sys/class/input read is answered here, so a Linux runner's own
   // devices never leak into the result.
   const realReadFile = fs.readFileSync;
   t.mock.method(fs, "readFileSync", (target, ...rest) => {
-    if (!String(target).startsWith("/sys/class/input/")) {
+    if (!String(target).split(path.sep).join("/").startsWith("/sys/class/input/")) {
       return realReadFile.call(fs, target, ...rest);
     }
     const match = /^\/sys\/class\/input\/(event\d+)\/device\/capabilities\/(ev|key)$/.exec(
-      String(target)
+      String(target).split(path.sep).join("/")
     );
     if (!sysfs || !match) throw enoent();
     const [, node, bitmap] = match;

@@ -5,7 +5,7 @@ const Module = require("node:module");
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
-  if (request === "electron") return { app: {} };
+  if (request === "electron") return { app: { getPath: () => require("node:os").tmpdir() } };
   return originalLoad.call(this, request, parent, isMain);
 };
 const DatabaseManager = require("../../src/helpers/database.js");
@@ -15,6 +15,8 @@ function createDatabaseManager() {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(`
     PRAGMA foreign_keys = ON;
+    CREATE TABLE note_speaker_representations (note_id INTEGER NOT NULL, speaker_id TEXT NOT NULL, representation TEXT NOT NULL, PRIMARY KEY(note_id, speaker_id));
+    CREATE TABLE import_media_cleanup (id INTEGER PRIMARY KEY, metadata TEXT NOT NULL);
     CREATE TABLE spaces (
       id INTEGER PRIMARY KEY,
       kind TEXT NOT NULL,

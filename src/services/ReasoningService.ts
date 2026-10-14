@@ -86,7 +86,7 @@ class ReasoningService {
       await prepareNimiAIWork(controller.signal);
       const binding = createNimiLocalAppVercelLanguageModel({
         ai: getNimiClient().ai,
-        executionMode: "sync",
+        executionMode: "stream",
       });
       const model = wrapLanguageModel({
         model: binding,
@@ -100,6 +100,7 @@ class ReasoningService {
       });
       const result = streamText({
         model,
+        instructions: config.systemPrompt,
         messages: messages as ModelMessage[],
         tools,
         stopWhen: stepCountIs(tools ? 20 : 1),

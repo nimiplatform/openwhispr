@@ -107,7 +107,7 @@ export class ToolRegistry {
       result[def.name] = {
         description: def.description,
         inputSchema: jsonSchema(def.parameters),
-        execute: async (args: unknown, options: ToolExecutionOptions) => {
+        execute: async (args: unknown, options: ToolExecutionOptions<unknown>) => {
           try {
             const toolResult = await executeTool(
               def,

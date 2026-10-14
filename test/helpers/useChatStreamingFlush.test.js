@@ -10,8 +10,7 @@ const {
   installHookDom,
 } = require("../lib/rendererTestHarness");
 
-// Keep the real SSE transport smoke test alongside controlled hook tests:
-// acknowledging a yielded chunk lets us test a pending flush without sleeps.
+// Controlled normalized streams make hook flush timing deterministic.
 function createControlledStream() {
   let next = Promise.withResolvers();
   let ended = false;
@@ -40,16 +39,6 @@ function createControlledStream() {
   };
 }
 
-function createOpenAiChunk(delta, finishReason = null) {
-  return {
-    id: "chatcmpl-cancellation-test",
-    object: "chat.completion.chunk",
-    created: 1,
-    model: "qwen3-4b-q4_k_m",
-    choices: [{ index: 0, delta, finish_reason: finishReason }],
-  };
-}
-
 async function renderChatStreaming(
   t,
   {
@@ -60,6 +49,7 @@ async function renderChatStreaming(
     live = false,
     stream,
     abortThrows = false,
+    onRequest = () => {},
   } = {}
 ) {
   let unmount;
@@ -71,8 +61,21 @@ async function renderChatStreaming(
   });
   installBrowserGlobals(t, { window: { electronAPI } });
   const container = live ? installHookDom(t) : null;
+  globalThis.__flushReasoning = {
+    processTextStreamingAI: (...args) => {
+      onRequest(...args);
+      return stream.read();
+    },
+    cancelActiveStream: () =>
+      stream.end(abortThrows ? new DOMException("aborted", "AbortError") : undefined),
+    destroy() {},
+  };
+  t.after(() => {
+    delete globalThis.__flushReasoning;
+  });
   const vite = await createRendererServer(t, {
     cachePrefix: "openwhispr-chat-streaming-flush-test-",
+    mockModules: { "/services/ReasoningService": "export default globalThis.__flushReasoning;" },
   });
   const [{ default: viteI18next }, { initReactI18next }] = await Promise.all([
     vite.ssrLoadModule("i18next"),
@@ -92,7 +95,6 @@ async function renderChatStreaming(
   const { useSettingsStore } = await vite.ssrLoadModule("/stores/settingsStore.ts");
   const { usePolicyStore } = await vite.ssrLoadModule("/stores/policyStore.ts");
   usePolicyStore.setState({ status: "unmanaged", appVersion: "1.8.3", policy: null });
-  // The 4B model enables tool handling for both the SSE and controlled streams.
   useSettingsStore.setState({
     chatAgentMode: "self-hosted",
     chatAgentProvider: "lan",
@@ -104,18 +106,7 @@ async function renderChatStreaming(
   });
 
   const { useChatStreaming } = await vite.ssrLoadModule("/components/chat/useChatStreaming.ts");
-  const reasoningService = (await vite.ssrLoadModule("/services/ReasoningService.ts")).default;
-  // useChatStreaming imports ReasoningService.ts, whose default export is a
-  // singleton constructed at import time; its API-key cache starts a real
-  // setInterval that otherwise keeps the process alive after the test ends.
-  t.after(() => reasoningService.destroy());
-  if (stream) {
-    t.mock.method(reasoningService, "processTextStreamingAI", () => stream.read());
-    t.mock.method(reasoningService, "cancelActiveStream", () =>
-      stream.end(abortThrows ? new DOMException("aborted", "AbortError") : undefined)
-    );
-  }
-
+  await (await vite.ssrLoadModule("/i18n.ts")).default.changeLanguage("en");
   let messages = [];
   let committedMessages = [];
   let renderMessages;
@@ -236,73 +227,21 @@ const ERROR_PREFIX = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../../src/locales/en/translation.json"), "utf8")
 ).agentMode.chat.errorPrefix;
 
-function sseEvent(delta, finishReason = null) {
-  return `data: ${JSON.stringify(createOpenAiChunk(delta, finishReason))}\n\n`;
-}
-
-function stubFetch(t, body) {
-  const originalFetch = globalThis.fetch;
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-  globalThis.fetch = async () =>
-    new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
-}
-
-test("fifty streamed tokens produce a handful of content writes, and the final text is intact", async (t) => {
+test("fifty normalized tokens batch content writes while retaining the full reply", async (t) => {
   const deltas = Array.from({ length: 50 }, (_, i) => `tok${i} `);
-  stubFetch(
-    t,
-    deltas.map((text) => sseEvent({ content: text })).join("") +
-      sseEvent({}, "stop") +
-      "data: [DONE]\n\n"
-  );
-  const harness = await renderChatStreaming(t);
-
-  await harness.captured.sendToAI("count to fifty", harness.getMessages());
-
-  const assistant = harness.getMessages().find((m) => m.role === "assistant");
-  assert.equal(assistant.content, deltas.join(""), "every token is in the final text");
-  assert.equal(assistant.isStreaming, false);
-  assert.ok(
-    harness.getContentWrites() <= 3,
-    `expected at most 3 content writes for 50 tokens, got ${harness.getContentWrites()}`
-  );
+  const stream = {
+    async *read() {
+      for (const text of deltas) yield { type: "content", text };
+      yield { type: "done" };
+    },
+    end() {},
+  };
+  const h = await renderChatStreaming(t, { stream });
+  await h.captured.sendToAI("count to fifty", []);
+  assert.equal(h.getMessages()[0].content, deltas.join(""));
+  assert.equal(h.getMessages()[0].isStreaming, false);
+  assert.ok(h.getContentWrites() <= 3);
 });
-
-test(
-  "an SSE error after a parsed token keeps the error instead of a late partial flush",
-  { timeout: 15000 },
-  async (t) => {
-    const tokenConsumed = Promise.withResolvers();
-    const encoder = new TextEncoder();
-    stubFetch(
-      t,
-      new ReadableStream({
-        async start(controller) {
-          controller.enqueue(encoder.encode(sseEvent({ content: "Partial reply" })));
-          await tokenConsumed.promise;
-          controller.error(new Error("boom"));
-        },
-      })
-    );
-    const harness = await renderChatStreaming(t, { onResponseContent: tokenConsumed.resolve });
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    await harness.captured.sendToAI("fail please", []);
-    assert.equal(harness.getResponseContentCalls(), 1, "the token reached the hook before failure");
-    assert.equal(
-      harness.getContentWrites(),
-      1,
-      "only the error was written before the clock advanced"
-    );
-    assert.equal(harness.getMessages()[0].content, `${ERROR_PREFIX}: boom`);
-    assert.equal(harness.getMessages()[0].isStreaming, false);
-    const dispatches = harness.getDispatches();
-    t.mock.timers.tick(1000);
-    assert.equal(harness.getDispatches(), dispatches, "the pending flush was cancelled");
-    assert.equal(harness.getMessages()[0].content, `${ERROR_PREFIX}: boom`);
-  }
-);
 
 test("paced tokens flush during the stream, rearm the timer, and persist the final tail", async (t) => {
   const harness = await startControlledChat(t);
@@ -444,25 +383,22 @@ for (const withContent of [true, false]) {
   });
 }
 
-test("plainTextResponse appends the plain-text instruction to the system prompt", async (t) => {
-  const requestBodies = [];
-  const originalFetch = globalThis.fetch;
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-  globalThis.fetch = async (_url, init) => {
-    requestBodies.push(String(init?.body));
-    return new Response(sseEvent({ content: "ok" }, "stop") + "data: [DONE]\n\n", {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
+test("plainTextResponse appends instructions to the separate Nimi system prompt", async (t) => {
+  const requests = [];
+  const stream = {
+    async *read() {
+      yield { type: "content", text: "ok" };
+      yield { type: "done" };
+    },
+    end() {},
   };
-  const harness = await renderChatStreaming(t);
-
-  await harness.captured.sendToAI("draft a reply", [], { plainTextResponse: true });
-  await harness.captured.sendToAI("draft a reply", []);
-
-  assert.equal(requestBodies.length, 2);
-  assert.match(requestBodies[0], /OUTPUT FORMAT:/);
-  assert.doesNotMatch(requestBodies[1], /OUTPUT FORMAT:/);
+  const h = await renderChatStreaming(t, {
+    stream,
+    onRequest: (_messages, config) => requests.push(config),
+  });
+  await h.captured.sendToAI("draft a reply", [], { plainTextResponse: true });
+  await h.captured.sendToAI("draft a reply", []);
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].systemPrompt, /OUTPUT FORMAT:/);
+  assert.doesNotMatch(requests[1].systemPrompt, /OUTPUT FORMAT:/);
 });

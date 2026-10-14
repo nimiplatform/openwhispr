@@ -25,6 +25,35 @@ storage_policy:
     - path_pattern: ~/.config/OpenWhispr-Nimi/**
       purpose: Linux App-owned notes, recordings, history and settings
       expected_size_band: Megabytes for notes/settings; gigabytes depending on retained audio
+safety_profile:
+  ai:
+    direct_interaction: true
+    interaction_notice: absent
+    outputs:
+      - export_visible_marking: absent
+        exposure: publishable
+        in_product_notice: absent
+        machine_readable_marking: absent
+        modality: text
+        publication_control: user-confirmed
+    risk_features: []
+    subject_notice: not-applicable
+  content_descriptors:
+    - unmoderated-shared-content
+  data_practices:
+    commercial_features:
+      - subscription
+    publisher_direct_external_network: true
+    sensitive_data_categories:
+      - contacts
+      - biometric
+    telemetry:
+      - usage-analytics
+    third_party_account: optional
+    user_content_sharing: public
+  high_impact_decision_uses:
+    - biometric-identification
+  intended_audience: general
 support_manifest:
   diagnostics_bundle_fields:
     - app_version

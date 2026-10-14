@@ -4,6 +4,18 @@ const Module = require("node:module");
 const { EventEmitter } = require("node:events");
 const childProcess = require("node:child_process");
 
+// Electron 44 exposes asynchronous MIME ClipboardItems; no removed sync helpers.
+class TestClipboardItem {
+  constructor(data) {
+    this.data = data;
+    this.types = Object.keys(data);
+  }
+  async getType(type) {
+    await Promise.resolve();
+    return this.data[type];
+  }
+}
+const nonEmptyImage = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
 const fakeClipboard = {
   text: "",
   html: "",
@@ -11,13 +23,35 @@ const fakeClipboard = {
   image: null,
   formats: ["text/plain"],
   writes: [],
-  availableFormats() {
-    return this.formats;
+  async read() {
+    await Promise.resolve();
+    const values = {
+      "text/plain": this.text,
+      "text/html": this.html,
+      "text/rtf": this.rtf,
+      "image/png": this.image,
+    };
+    return this.formats.length
+      ? [
+          new TestClipboardItem(
+            Object.fromEntries(
+              this.formats.map((type) => [
+                type,
+                values[type] instanceof Blob
+                  ? values[type]
+                  : new Blob([values[type] ?? "custom-data"], { type }),
+              ])
+            )
+          ),
+        ]
+      : [];
   },
-  readText() {
+  async readText() {
+    await Promise.resolve();
     return this.text;
   },
-  writeText(text) {
+  async writeText(text) {
+    await Promise.resolve();
     this.text = text;
     this.html = "";
     this.rtf = "";
@@ -25,39 +59,33 @@ const fakeClipboard = {
     this.formats = ["text/plain"];
     this.writes.push(["writeText", text]);
   },
-  readHTML() {
-    return this.html;
-  },
-  readRTF() {
-    return this.rtf;
-  },
-  write(payload) {
-    this.text = payload.text || "";
-    this.html = payload.html || "";
-    this.rtf = payload.rtf || "";
-    this.image = payload.image || null;
-    this.formats = [];
-    if (Object.hasOwn(payload, "text")) this.formats.push("text/plain");
-    if (Object.hasOwn(payload, "html")) this.formats.push("text/html");
-    if (Object.hasOwn(payload, "rtf")) this.formats.push("text/rtf");
-    if (Object.hasOwn(payload, "image")) this.formats.push("image/png");
-    this.writes.push(["write", payload]);
-  },
-  readImage() {
-    return this.image || emptyImage;
-  },
-  writeImage(image) {
+  async write(items) {
+    assert.ok(Array.isArray(items), "Electron 44 write requires ClipboardItems");
+    this.formats = items.flatMap((item) => item.types);
     this.text = "";
     this.html = "";
     this.rtf = "";
-    this.image = image;
-    this.formats = image && !image.isEmpty() ? ["image/png"] : [];
-    this.writes.push(["writeImage", image]);
+    this.image = null;
+    for (const item of items)
+      for (const type of item.types) {
+        const blob = await item.getType(type);
+        if (type === "text/plain") this.text = await blob.text();
+        if (type === "text/html") this.html = await blob.text();
+        if (type === "text/rtf") this.rtf = await blob.text();
+        if (type === "image/png") this.image = blob;
+      }
+    this.writes.push(["write", items]);
+  },
+  selection: {
+    text: "",
+    async readText() {
+      return this.text;
+    },
+    async writeText(text) {
+      this.text = text;
+    },
   },
 };
-
-const emptyImage = { isEmpty: () => true };
-const nonEmptyImage = { isEmpty: () => false };
 
 const clipboardModulePath = require.resolve("../../src/helpers/clipboard");
 
@@ -179,7 +207,7 @@ function resetClipboard({
   fakeClipboard.writes = [];
 }
 
-test("restore preserves rich clipboard formats atomically", () => {
+test("restore preserves rich clipboard formats atomically", async () => {
   resetClipboard({
     formats: ["text/html", "text/rtf", "text/plain", "image/png"],
     text: "plain before",
@@ -189,11 +217,11 @@ test("restore preserves rich clipboard formats atomically", () => {
   });
   const manager = new ClipboardManager();
 
-  const snapshot = manager._saveClipboard();
-  fakeClipboard.writeText("dictated text");
-  manager._restoreClipboard(snapshot);
+  const snapshot = await manager._saveClipboard();
+  await fakeClipboard.writeText("dictated text");
+  await manager._restoreClipboard(snapshot);
 
-  assert.deepEqual([...fakeClipboard.availableFormats()].sort(), [
+  assert.deepEqual([...fakeClipboard.formats].sort(), [
     "image/png",
     "text/html",
     "text/plain",
@@ -1158,7 +1186,8 @@ test("intentional macOS clipboard fallback stays silent and does not throw", asy
 
 test("clipboard write failure is never classified as an Accessibility denial", async (t) => {
   const write = fakeClipboard.writeText;
-  fakeClipboard.writeText = () => {
+  fakeClipboard.writeText = async () => {
+    await Promise.resolve();
     throw new Error("clipboard unavailable");
   };
   t.after(() => {
@@ -1171,4 +1200,48 @@ test("clipboard write failure is never classified as an Accessibility denial", a
     assert.equal(error.clipboardCopied, undefined);
     return true;
   });
+});
+
+test("paste waits for the asynchronous clipboard write before native delivery", async (t) => {
+  const oldWrite = fakeClipboard.writeText,
+    gate = Promise.withResolvers(),
+    started = Promise.withResolvers();
+  t.after(() => {
+    fakeClipboard.writeText = oldWrite;
+  });
+  fakeClipboard.writeText = async function (text) {
+    started.resolve();
+    await gate.promise;
+    await oldWrite.call(this, text);
+  };
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32" });
+  t.after(() => Object.defineProperty(process, "platform", platform));
+  const manager = new ClipboardManager();
+  let pasted = false;
+  manager.resolveWindowsFastPasteBinary = () => "test-fast-paste";
+  manager.pasteWindows = async () => {
+    assert.equal(fakeClipboard.text, "new transcription");
+    pasted = true;
+    return { restoreComplete: Promise.resolve() };
+  };
+  const pending = manager._pasteText("new transcription", { restoreClipboard: false });
+  await started.promise;
+  assert.equal(pasted, false);
+  gate.resolve();
+  await pending;
+  assert.equal(pasted, true);
+});
+test("unrecognized MIME clipboard items survive snapshot and atomic restoration", async () => {
+  resetClipboard({ formats: ["application/x-business-record", "text/plain"], text: "original" });
+  const manager = new ClipboardManager(),
+    snapshot = await manager._saveClipboard();
+  await fakeClipboard.writeText("transcription");
+  await manager._restoreClipboard(snapshot);
+  assert.equal(
+    await (await snapshot.data[0].getType("application/x-business-record")).text(),
+    "custom-data"
+  );
+  assert.deepEqual(fakeClipboard.formats, ["application/x-business-record", "text/plain"]);
+  assert.equal(fakeClipboard.writes.at(-1)[1], snapshot.data);
 });

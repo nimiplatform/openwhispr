@@ -7,9 +7,15 @@ const Module = require("node:module");
 const loopbackModulePath = require.resolve("../../src/helpers/oauthLoopbackFlow.js");
 const originalLoad = Module._load;
 
-function loadLoopback() {
+function loadLoopback(openedUrls) {
   delete require.cache[loopbackModulePath];
   Module._load = function loadWithElectronMock(request, parent, isMain) {
+    if (request === "./externalUrlOpener")
+      return {
+        openExternalUrl: async (url) => {
+          openedUrls.push(url);
+        },
+      };
     if (request === "electron") {
       return { shell: { openExternal() {} } };
     }
@@ -23,7 +29,8 @@ function loadLoopback() {
 }
 
 function startFlow(handleCallback = async () => ({ ok: true }), options = {}) {
-  const { runOAuthLoopbackFlow } = loadLoopback();
+  const openedUrls = [];
+  const { runOAuthLoopbackFlow } = loadLoopback(openedUrls);
   let redirectUri;
   let state;
   let authUrlCalls = 0;
@@ -52,6 +59,7 @@ function startFlow(handleCallback = async () => ({ ok: true }), options = {}) {
       getRedirectUri: () => redirectUri,
       getState: () => state,
       getAuthUrlCalls: () => authUrlCalls,
+      openedUrls,
     };
   } finally {
     http.createServer = originalCreateServer;
@@ -216,9 +224,10 @@ test("a callback with a code and the wrong state rejects immediately", async () 
 });
 
 test("a request with no code leaves the flow running until a real callback", async () => {
-  const { flow, getRedirectUri, getState } = startFlow(async (code) => ({ code }));
+  const { flow, getRedirectUri, getState, openedUrls } = startFlow(async (code) => ({ code }));
   const redirectUri = await waitForListen(getRedirectUri);
 
+  assert.deepEqual(openedUrls, ["https://example.test/auth"]);
   const stray = await fetch(`${redirectUri}/favicon.ico`, { redirect: "manual" });
   assert.equal(stray.status, 400);
 

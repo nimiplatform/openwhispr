@@ -8,19 +8,40 @@ const { createRendererServer, installBrowserGlobals } = require("../lib/renderer
 
 // Drives the real useChatStreaming hook (one synchronous render, then its
 // sendToAI closure; see useChatStreamingCancellation.test.js) on the
-// OpenWhispr Cloud path, with the stream itself stubbed so the test can see
+// Nimi path, with the model stream itself stubbed so the test can see
 // which tools (and messages) a send offers the model.
 async function renderChatStreaming(
   t,
   hookOptions = {},
-  { settings = {}, electronAPI = {}, subscribed = true } = {}
+  {
+    settings = {},
+    electronAPI = {},
+    subscribed = true,
+    searchNotes = async () => ({ notes: [] }),
+  } = {}
 ) {
+  const reasoningService = {
+    processTextStreamingAI() {
+      throw new Error("Unconfigured model fixture");
+    },
+    cancelActiveStream() {},
+    destroy() {},
+  };
+  globalThis.__chatReasoningFixture = reasoningService;
+  globalThis.__chatSearchNotes = searchNotes;
+  t.after(() => delete globalThis.__chatSearchNotes);
+  t.after(() => delete globalThis.__chatReasoningFixture);
   installBrowserGlobals(t, {
     initialStorage: { isSubscribed: String(subscribed) },
     window: { electronAPI },
   });
   const vite = await createRendererServer(t, {
     cachePrefix: "openwhispr-chat-streaming-tools-test-",
+    mockModules: {
+      "/services/ReasoningService": "export default globalThis.__chatReasoningFixture;",
+      "/nimiNotes":
+        'export const searchNimiNotes = (...args) => globalThis.__chatSearchNotes(...args); export const readNimiNote = async () => { throw new Error("Unconfigured note fixture"); };',
+    },
   });
   const [{ default: viteI18next }, { initReactI18next }] = await Promise.all([
     vite.ssrLoadModule("i18next"),
@@ -45,28 +66,24 @@ async function renderChatStreaming(
   const { useChatStreaming } = await vite.ssrLoadModule("/components/chat/useChatStreaming.ts");
   // The app's i18n module (loaded with the tools) follows the machine's locale.
   await (await vite.ssrLoadModule("/i18n.ts")).default.changeLanguage("en");
-  const reasoningService = (await vite.ssrLoadModule("/services/ReasoningService.ts")).default;
   t.after(() => reasoningService.destroy());
 
   const offeredTools = [];
   const sentMessages = [];
+  const sentSystemPrompts = [];
   const endStream = async function* () {
     yield { type: "done", finishReason: "stop" };
   };
-  t.mock.method(reasoningService, "processTextStreamingCloud", (messages, config) => {
+  t.mock.method(reasoningService, "processTextStreamingAI", (messages, config, tools) => {
+    assert.equal(
+      messages.some((message) => message.role === "system"),
+      false
+    );
     sentMessages.push(messages);
-    offeredTools.push((config.tools ?? []).map((tool) => tool.name));
+    sentSystemPrompts.push(config.systemPrompt);
+    offeredTools.push(Object.keys(tools ?? {}));
     return endStream();
   });
-  t.mock.method(
-    reasoningService,
-    "processTextStreamingAI",
-    (messages, _model, _provider, _config, tools) => {
-      sentMessages.push(messages);
-      offeredTools.push(Object.keys(tools ?? {}));
-      return endStream();
-    }
-  );
 
   let messages = [];
   const setMessages = (updater) => {
@@ -82,6 +99,7 @@ async function renderChatStreaming(
     captured,
     offeredTools,
     sentMessages,
+    sentSystemPrompts,
     reasoningService,
     usePolicyStore,
     getMessages: () => messages,
@@ -218,23 +236,22 @@ test("on the AI SDK path a tool step shows the tool's own text, not a bare Done"
       },
     }
   );
-  reasoningService.processTextStreamingAI.mock.mockImplementation(
-    (_messages, _model, _provider, _config, tools) =>
-      (async function* () {
-        yield {
-          type: "tool_calls",
-          calls: [{ id: "call-1", name: "find_contact", arguments: "{}" }],
-        };
-        await tools.find_contact.execute({ name: "Gab" }, { toolCallId: "call-1", messages: [] });
-        // What ReasoningService yields for any object output.
-        yield {
-          type: "tool_result",
-          callId: "call-1",
-          toolName: "find_contact",
-          displayText: "Done",
-        };
-        yield { type: "done", finishReason: "stop" };
-      })()
+  reasoningService.processTextStreamingAI.mock.mockImplementation((_messages, _config, tools) =>
+    (async function* () {
+      yield {
+        type: "tool_calls",
+        calls: [{ id: "call-1", name: "find_contact", arguments: "{}" }],
+      };
+      await tools.find_contact.execute({ name: "Gab" }, { toolCallId: "call-1", messages: [] });
+      // What ReasoningService yields for any object output.
+      yield {
+        type: "tool_result",
+        callId: "call-1",
+        toolName: "find_contact",
+        displayText: "Done",
+      };
+      yield { type: "done", finishReason: "stop" };
+    })()
   );
 
   let holds = 0;
@@ -293,17 +310,20 @@ test("a search's items reach the model but are never kept with the conversation"
   assert.deepEqual(note.metadata, { id: 7, title: "Standup" }, "a note card still gets its data");
 });
 
-test("on the cloud path a tool's hold reaches the caller through the turn's scope", async (t) => {
+test("on the Nimi path a tool's hold reaches the caller through the turn's scope", async (t) => {
   const { captured, reasoningService } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
     electronAPI: { connectorFindContacts: async () => ({ contacts: [] }) },
   });
-  reasoningService.processTextStreamingCloud.mock.mockImplementation((_messages, config) =>
+  reasoningService.processTextStreamingAI.mock.mockImplementation((_messages, config, tools) =>
     (async function* () {
       yield {
         type: "tool_calls",
         calls: [{ id: "srv-1", name: "find_contact", arguments: '{"name":"Zed"}' }],
       };
-      const result = await config.executeToolCall("find_contact", '{"name":"Zed"}', "srv-1");
+      const result = await tools.find_contact.execute(
+        { name: "Zed" },
+        { toolCallId: "srv-1", messages: [] }
+      );
       yield {
         type: "tool_result",
         callId: "srv-1",
@@ -331,13 +351,16 @@ test("Esc settles a send whose tool never finishes, and a late result is dropped
     },
   });
   let toolResult;
-  reasoningService.processTextStreamingCloud.mock.mockImplementation((_messages, config) =>
+  reasoningService.processTextStreamingAI.mock.mockImplementation((_messages, config, tools) =>
     (async function* () {
       yield {
         type: "tool_calls",
         calls: [{ id: "srv-2", name: "find_contact", arguments: '{"name":"Zed"}' }],
       };
-      toolResult = await config.executeToolCall("find_contact", '{"name":"Zed"}', "srv-2");
+      toolResult = await tools.find_contact.execute(
+        { name: "Zed" },
+        { toolCallId: "srv-2", messages: [] }
+      );
       yield { type: "done", finishReason: "stop" };
     })()
   );
@@ -352,7 +375,7 @@ test("Esc settles a send whose tool never finishes, and a late result is dropped
   finishLookup({ contacts: [{ name: "Zed", email: "zed@example.com", lastMet: null }] });
 
   assert.equal(outcome, "settled");
-  assert.equal(toolResult.displayText, "");
+  assert.deepEqual(toolResult, { error: "" });
 });
 
 test("an error before the stream starts still rejects the send and adds no messages", async (t) => {
@@ -385,12 +408,11 @@ for (const [ending, finishStream] of Object.entries(STREAM_ENDINGS)) {
         connectorCancel: async (runId, reason) => cancels.push(reason),
       },
     });
-    reasoningService.processTextStreamingCloud.mock.mockImplementation((_messages, config) =>
+    reasoningService.processTextStreamingAI.mock.mockImplementation((_messages, config, tools) =>
       (async function* () {
-        void config.executeToolCall(
-          "email_draft",
-          JSON.stringify({ to: ["zed@example.com"], subject: "Hi", body: "Hello" }),
-          "srv-3"
+        void tools.email_draft.execute(
+          { to: ["zed@example.com"], subject: "Hi", body: "Hello" },
+          { toolCallId: "srv-3", messages: [] }
         );
         yield* finishStream();
       })()
@@ -420,8 +442,8 @@ async function renderDraftTurns(t, streamForSend) {
     },
   });
   let sends = 0;
-  reasoningService.processTextStreamingCloud.mock.mockImplementation((_messages, config) =>
-    streamForSend(sends++, config)
+  reasoningService.processTextStreamingAI.mock.mockImplementation((_messages, config, tools) =>
+    streamForSend(sends++, tools)
   );
   const nextDraftOpened = () =>
     new Promise((resolve) => {
@@ -430,12 +452,11 @@ async function renderDraftTurns(t, streamForSend) {
   return { captured, opened, cancelled, nextDraftOpened };
 }
 
-function awaitDraft(config, callId) {
+function awaitDraft(tools, callId) {
   return (async function* () {
-    await config.executeToolCall(
-      "email_draft",
-      JSON.stringify({ to: ["zed@example.com"], subject: "Hi", body: "Hello" }),
-      callId
+    await tools.email_draft.execute(
+      { to: ["zed@example.com"], subject: "Hi", body: "Hello" },
+      { toolCallId: callId, messages: [] }
     );
     yield { type: "done", finishReason: "stop" };
   })();
@@ -509,11 +530,11 @@ async function renderWithStatuses(t, statuses, { electronAPI = {}, duringStream 
     },
   });
   const sends = [];
-  rendered.reasoningService.processTextStreamingCloud.mock.mockImplementation(
-    (_messages, config) => {
-      sends.push(config);
+  rendered.reasoningService.processTextStreamingAI.mock.mockImplementation(
+    (_messages, _config, tools) => {
+      sends.push(tools);
       return (async function* () {
-        await duringStream?.(config);
+        await duringStream?.(tools);
         yield { type: "done", finishReason: "stop" };
       })();
     }
@@ -521,8 +542,7 @@ async function renderWithStatuses(t, statuses, { electronAPI = {}, duringStream 
   return { ...rendered, sends };
 }
 
-const emailDraftDescription = (config) =>
-  config.tools.find((tool) => tool.name === "email_draft").description;
+const emailDraftDescription = (tools) => tools.email_draft.description;
 
 test("a connected Gmail turns email_draft into a card the user sends from the chat", async (t) => {
   const { captured, sends } = await renderWithStatuses(t, [GMAIL]);
@@ -548,18 +568,17 @@ test("a Gmail login that needs reconnecting asks for a reconnect instead of open
         calls.runDirect += 1;
       },
     },
-    duringStream: async (config) => {
-      result = await config.executeToolCall(
-        "email_draft",
-        JSON.stringify({ to: ["josh@acme.test"], subject: "Q3", body: "Numbers." }),
-        "srv-gmail"
+    duringStream: async (tools) => {
+      result = await tools.email_draft.execute(
+        { to: ["josh@acme.test"], subject: "Q3", body: "Numbers." },
+        { toolCallId: "srv-gmail", messages: [] }
       );
     },
   });
   await captured.sendToAI("Email Josh the Q3 numbers", []);
 
   assert.match(emailDraftDescription(sends[0]), /card in the chat/);
-  assert.equal(JSON.parse(result.data).reason, "reconnect_needed");
+  assert.equal(result.reason, "reconnect_needed");
   assert.deepEqual(calls, { prepare: 0, runDirect: 0 });
 });
 
@@ -593,14 +612,12 @@ async function renderNoteChat(t, hookOptions, { answer, subscribed = true } = {}
     }
   );
   const prompts = [];
-  rendered.reasoningService.processTextStreamingCloud.mock.mockImplementation(
-    (_messages, config) => {
-      prompts.push(config.systemPrompt);
-      return (async function* () {
-        yield { type: "done", finishReason: "stop" };
-      })();
-    }
-  );
+  rendered.reasoningService.processTextStreamingAI.mock.mockImplementation((_messages, config) => {
+    prompts.push(config.systemPrompt);
+    return (async function* () {
+      yield { type: "done", finishReason: "stop" };
+    })();
+  });
   return { ...rendered, lookups, prompts };
 }
 
@@ -687,11 +704,9 @@ test("a note action sends its prompt in place of the visible message, without se
     t,
     {},
     {
-      electronAPI: {
-        semanticSearchNotes: async (query) => {
-          searches.push(query);
-          return [];
-        },
+      searchNotes: async (query) => {
+        searches.push(query);
+        return { notes: [] };
       },
     }
   );
@@ -709,10 +724,8 @@ test("a note action sends its prompt in place of the visible message, without se
 
 // ---- What the model is told it can and can't do ----
 
-const systemPromptOf = (messages) => messages.find((m) => m.role === "system").content;
-
 test("an earlier turn's tool use reaches the model as a note on that answer", async (t) => {
-  const { captured, sentMessages } = await renderChatStreaming(t);
+  const { captured, sentMessages, sentSystemPrompts } = await renderChatStreaming(t);
   const earlier = [
     { id: "u1", role: "user", content: "Weather in Lisbon?" },
     {
@@ -734,7 +747,8 @@ test("an earlier turn's tool use reaches the model as a note on that answer", as
 
   await captured.sendToAI("And tomorrow?", earlier);
 
-  const [system, ...history] = sentMessages[0];
+  const system = { content: sentSystemPrompts[0] };
+  const history = sentMessages[0];
   assert.match(system.content, /Never write such a note yourself/);
   assert.deepEqual(history, [
     { role: "user", content: "Weather in Lisbon?" },
@@ -747,11 +761,11 @@ test("an earlier turn's tool use reaches the model as a note on that answer", as
 });
 
 test("signed out, the model is told to point the user at signing in", async (t) => {
-  const { captured, sentMessages } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
+  const { captured, sentSystemPrompts } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
     settings: { ...BYOK_SETTINGS, isSignedIn: false },
   });
   await captured.sendToAI("What's new in AI today?", []);
-  const prompt = systemPromptOf(sentMessages[0]);
+  const prompt = sentSystemPrompts[0];
   assert.match(
     prompt,
     /- Web search: needs the user to sign in to OpenWhispr in Settings → Profile\./
@@ -763,11 +777,11 @@ test("signed out, the model is told to point the user at signing in", async (t) 
 });
 
 test("on a free plan, the model still writes the email and then says a paid plan can send it", async (t) => {
-  const { captured, sentMessages } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
+  const { captured, sentSystemPrompts } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
     subscribed: false,
   });
   await captured.sendToAI("Email Josh", []);
-  const prompt = systemPromptOf(sentMessages[0]);
+  const prompt = sentSystemPrompts[0];
   assert.match(
     prompt,
     /still write it in full in your reply, then end with one short sentence on how they can have you send it for them[^\n]*\n- Integrations \(Email, Slack, Linear, GitHub\): needs a paid OpenWhispr plan in Settings → Plans & Billing\./
@@ -776,7 +790,7 @@ test("on a free plan, the model still writes the email and then says a paid plan
 });
 
 test("an org that turns web search off is named as the reason", async (t) => {
-  const { captured, sentMessages, usePolicyStore } = await renderChatStreaming(t);
+  const { captured, sentSystemPrompts, usePolicyStore } = await renderChatStreaming(t);
   usePolicyStore.setState({
     status: "managed",
     appVersion: "1.10.0",
@@ -786,14 +800,11 @@ test("an org that turns web search off is named as the reason", async (t) => {
     },
   });
   await captured.sendToAI("Who won last night?", []);
-  assert.match(
-    systemPromptOf(sentMessages[0]),
-    /- Web search: turned off by the user's organization/
-  );
+  assert.match(sentSystemPrompts[0], /- Web search: turned off by the user's organization/);
 });
 
 test("a connector that isn't connected is named with where to connect it", async (t) => {
-  const { captured, sentMessages } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
+  const { captured, sentSystemPrompts } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
     electronAPI: {
       connectorStatus: async () => [
         { id: "slack", connected: false, needsReconnect: false },
@@ -804,7 +815,7 @@ test("a connector that isn't connected is named with where to connect it", async
     },
   });
   await captured.sendToAI("Post this in #eng", []);
-  const prompt = systemPromptOf(sentMessages[0]);
+  const prompt = sentSystemPrompts[0];
   assert.match(
     prompt,
     /- Slack: not connected; the user can connect it in Integrations → Connectors\./
@@ -817,9 +828,9 @@ test("a connector that isn't connected is named with where to connect it", async
 });
 
 test("a surface without connectors (container chat) never names them", async (t) => {
-  const { captured, sentMessages } = await renderChatStreaming(t, {}, { subscribed: false });
+  const { captured, sentSystemPrompts } = await renderChatStreaming(t, {}, { subscribed: false });
   await captured.sendToAI("Summarize this folder", []);
-  const prompt = systemPromptOf(sentMessages[0]);
+  const prompt = sentSystemPrompts[0];
   assert.doesNotMatch(prompt, /Integrations \(Email|Slack:|paid OpenWhispr plan/);
   assert.match(
     prompt,
@@ -827,50 +838,12 @@ test("a surface without connectors (container chat) never names them", async (t)
   );
 });
 
-test("a local model too small for tools is told so, with no tool notes in its history", async (t) => {
-  const { captured, sentMessages, offeredTools } = await renderChatStreaming(t, CONNECTOR_SURFACE, {
-    settings: {
-      chatAgentMode: "local",
-      chatAgentProvider: "qwen",
-      chatAgentModel: "qwen3-1.7b-q4_k_m",
-    },
-  });
-  const earlier = [
-    { id: "u1", role: "user", content: "Weather in Lisbon?" },
-    {
-      id: "a1",
-      role: "assistant",
-      content: "Sunny.",
-      toolCalls: [
-        {
-          id: "c1",
-          name: "web_search",
-          arguments: JSON.stringify({ query: "Lisbon weather" }),
-          status: "completed",
-        },
-      ],
-    },
-    { id: "u2", role: "user", content: "And tomorrow?" },
-  ];
-
-  await captured.sendToAI("And tomorrow?", earlier);
-
-  assert.deepEqual(offeredTools[0], []);
-  const [system, ...history] = sentMessages[0];
-  assert.match(
-    system.content,
-    /- Tools \(web search, calendar, searching or changing notes, integrations\): the selected model runs without tools .* in Settings → Language Models\. You can still use anything already in this prompt, such as note text/
-  );
-  assert.doesNotMatch(system.content, /Tools used/);
-  assert.equal(history[1].content, "Sunny.");
-});
-
 test("a reply that imitates the tool notes is shown, saved and delivered without one", async (t) => {
   const completed = [];
   const { captured, reasoningService, getMessages } = await renderChatStreaming(t, {
     onStreamComplete: (_id, content) => completed.push(content),
   });
-  reasoningService.processTextStreamingCloud.mock.mockImplementation(() =>
+  reasoningService.processTextStreamingAI.mock.mockImplementation(() =>
     (async function* () {
       yield { type: "content", text: "[Tools used: slack_send" };
       yield { type: "content", text: "_message]" };
@@ -892,7 +865,7 @@ test("a reply that is only a tool note settles as an empty response, announced o
   const { captured, reasoningService, getMessages } = await renderChatStreaming(t, {
     onResponseContent: () => announced++,
   });
-  reasoningService.processTextStreamingCloud.mock.mockImplementation(() =>
+  reasoningService.processTextStreamingAI.mock.mockImplementation(() =>
     (async function* () {
       yield { type: "content", text: "[Tools used: web_" };
       yield { type: "content", text: "search]" };
@@ -910,11 +883,11 @@ test("a reply that is only a tool note settles as an empty response, announced o
 });
 
 test("the onboarding demo isn't told to send the user off to enable anything", async (t) => {
-  const { captured, sentMessages } = await renderChatStreaming(
+  const { captured, sentSystemPrompts } = await renderChatStreaming(
     t,
     { inferenceScope: "dictationAgent", nameUnavailableCapabilities: false },
     { settings: { isSignedIn: false } }
   );
   await captured.sendToAI("Reply with times I'm free", []);
-  assert.doesNotMatch(systemPromptOf(sentMessages[0]), /Not available in this conversation/);
+  assert.doesNotMatch(sentSystemPrompts[0], /Not available in this conversation/);
 });

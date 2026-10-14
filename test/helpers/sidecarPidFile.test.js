@@ -20,7 +20,7 @@ function createUserDataDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ow-sidecar-pids-"));
   userDataDir = dir;
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return path.join(dir, "sidecar-pids");
+  return path.join(require("../../src/helpers/appData").getAppDataDirectory(), "sidecar-pids");
 }
 
 test("an unreadable PID entry does not hide valid sidecar entries", (t) => {

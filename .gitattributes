@@ -1,1 +1,4 @@
 openwhispr-mobile/patches/*.patch -whitespace
+LICENSE -text
+resources/licenses/* -text -whitespace
+.github/workflows/nimi-app-release.yml text eol=lf

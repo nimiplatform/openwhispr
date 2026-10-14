@@ -69,13 +69,27 @@ function bindJobs(submissions, cancelAt, manager, prompts, rejectPrompt) {
         submit: async (spec) => {
           prompts.push(spec.prompt);
           if (rejectPrompt && spec.prompt)
-            throw new Error("Declared resource rejects transcription prompts");
+            throw Object.assign(new Error("Declared resource rejects transcription prompts"), {
+              reasonCode: "SDK_AI_INPUT_INVALID",
+            });
           const audio = Buffer.from(spec.audioSource.bytes);
           submissions.push(audio);
           const jobId = "declared-fixture-job-" + submissions.length;
           const job = {
             jobId,
+            scenarioType: spec.type,
             status: "completed",
+            submissionOutcome: "accepted",
+            artifacts: [],
+            progressPercent: 100,
+            progressCurrentStep: 0,
+            progressTotalSteps: 0,
+            reasonCode: "action-executed",
+            reasonDetail: "",
+            traceId: "fixture-transcription",
+            createdAt: null,
+            updatedAt: null,
+            transcriptionText: submissions.length === 1 ? "真实fixture首段" : "真实fixture尾段",
             transcription: {
               status: "transcribed",
               text: submissions.length === 1 ? "真实fixture首段" : "真实fixture尾段",
@@ -143,9 +157,9 @@ async function consumer(t, cancelAt, dictionary = [], rejectPrompt = false) {
 // Actual FFmpeg, upload port, original finalize/process consumer and Host Job observer. Responses are explicit ASR fixtures.
 test("over-300-second final dictation consumes complete source in finite Jobs after the 240-second PCM cap", async (t) => {
   const { submissions, outcomes, errors } = await consumer(t);
+  assert.deepEqual(errors, []);
   assert.equal(submissions.length, 2);
   assert.equal(outcomes.length, 1);
-  assert.deepEqual(errors, []);
   assert.equal(outcomes[0].rawText, "真实fixture首段\n真实fixture尾段");
   assert.equal(outcomes[0].chunks.length, 2);
   assert.deepEqual(

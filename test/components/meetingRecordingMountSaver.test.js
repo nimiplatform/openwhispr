@@ -34,6 +34,7 @@ async function setup(t) {
     if (root) await React.act(async () => root.unmount());
   });
   const listeners = {};
+  let activeSessionId;
   const capture = (name) => (callback) => {
     listeners[name] = callback;
     return () => {
@@ -49,11 +50,10 @@ async function setup(t) {
       mode: "native",
       strategy: "native",
     }),
-    meetingTranscriptionStart: async () => ({
-      success: true,
-      systemAudioMode: "native",
-      systemAudioStrategy: "native",
-    }),
+    meetingTranscriptionStart: async ({ sessionId }) => {
+      activeSessionId = sessionId;
+      return { success: true, systemAudioMode: "native", systemAudioStrategy: "native" };
+    },
     meetingTranscriptionSetSystemAudioAvailable: async () => ({ success: true }),
     meetingTranscriptionStop: async () => ({ success: true }),
     meetingTranscriptionSend() {},
@@ -80,7 +80,11 @@ async function setup(t) {
   globalThis.document.hasFocus = () => true;
   const vite = await createRendererServer(t, {
     cachePrefix: "openwhispr-meeting-mount-saver-test-",
-    mockModules: { "/ui/useToast": TOAST_MOCK },
+    mockModules: {
+      "/ui/useToast": TOAST_MOCK,
+      "/services/nimiClient":
+        "export const prepareNimiAIWork = async (signal) => { signal?.throwIfAborted(); };",
+    },
   });
   const { default: Mount } = await vite.ssrLoadModule("/components/MeetingRecordingMount.tsx");
   store = await vite.ssrLoadModule("/stores/meetingRecordingStore.ts");
@@ -91,12 +95,17 @@ async function setup(t) {
   const start = () => React.act(async () => store.startRecording(START_ARGS));
   const say = (text) =>
     React.act(async () =>
-      listeners.segment({ text, source: "mic", type: "final", timestamp: Date.now() })
+      listeners.segment({
+        text,
+        sessionId: activeSessionId,
+        source: "mic",
+        type: "final",
+        timestamp: Date.now(),
+      })
     );
   const deleteNote = (id) => listeners.noteDeleted?.({ id });
   const tick = (ms) => React.act(async () => t.mock.timers.tick(ms));
-  const savedTranscripts = () =>
-    writes.filter(([, patch]) => typeof patch.transcript === "string");
+  const savedTranscripts = () => writes.filter(([, patch]) => typeof patch.transcript === "string");
   return { start, say, deleteNote, tick, writes, savedTranscripts };
 }
 

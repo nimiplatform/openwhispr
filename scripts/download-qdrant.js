@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require("fs");
+const crypto = require("node:crypto");
 const path = require("path");
 const {
   downloadFile,
@@ -48,7 +49,7 @@ async function getRelease() {
   if (cachedRelease) return cachedRelease;
 
   if (VERSION_OVERRIDE) {
-    cachedRelease = await fetchLatestRelease(QDRANT_REPO, { tagPrefix: VERSION_OVERRIDE });
+    cachedRelease = await fetchLatestRelease(QDRANT_REPO, { tag: VERSION_OVERRIDE });
   } else {
     cachedRelease = await fetchLatestRelease(QDRANT_REPO);
   }
@@ -56,6 +57,12 @@ async function getRelease() {
 }
 
 function getDownloadUrl(release, archiveName) {
+  if (VERSION_OVERRIDE) {
+    if (!/^v\d+\.\d+\.\d+$/.test(VERSION_OVERRIDE)) {
+      throw new Error("QDRANT_VERSION must name an exact stable release tag");
+    }
+    return `https://github.com/${QDRANT_REPO}/releases/download/${VERSION_OVERRIDE}/${archiveName}`;
+  }
   const asset = release?.assets?.find((a) => a.name === archiveName);
   return asset?.url || null;
 }
@@ -76,9 +83,10 @@ async function downloadBinary(platformArch, config, release, isForce = false) {
 
   const outputPath = path.join(BIN_DIR, config.outputName);
   const markerPath = path.join(BIN_DIR, `.qdrant-${platformArch}.json`);
+  const version = VERSION_OVERRIDE || release.tag;
 
-  if (fs.existsSync(outputPath) && !isForce && isCurrentVersion(markerPath, release.tag)) {
-    console.log(`  [qdrant] ${platformArch}: Already up to date (${release.tag})`);
+  if (fs.existsSync(outputPath) && !isForce && isCurrentVersion(markerPath, version)) {
+    console.log(`  [qdrant] ${platformArch}: Already up to date (${version})`);
     return true;
   }
 
@@ -93,6 +101,12 @@ async function downloadBinary(platformArch, config, release, isForce = false) {
 
   try {
     await downloadFile(url, archivePath);
+    if (version === "v1.19.2" && platformArch === "win32-x64") {
+      const actual = crypto.createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
+      if (actual !== "7d86596f16c6e85d45a50312f5e16ccb51e059b62e3d7308110cb65b4c799a4d") {
+        throw new Error("Pinned Qdrant Windows archive checksum mismatch");
+      }
+    }
 
     const extractDir = path.join(BIN_DIR, `temp-qdrant-${platformArch}`);
     fs.mkdirSync(extractDir, { recursive: true });
@@ -102,7 +116,7 @@ async function downloadBinary(platformArch, config, release, isForce = false) {
     if (binaryPath) {
       fs.copyFileSync(binaryPath, outputPath);
       setExecutable(outputPath);
-      fs.writeFileSync(markerPath, JSON.stringify({ version: release.tag }));
+      fs.writeFileSync(markerPath, JSON.stringify({ version }));
       console.log(`  [qdrant] ${platformArch}: Extracted to ${config.outputName}`);
     } else {
       console.error(
@@ -127,16 +141,16 @@ async function main() {
   } else {
     console.log("\n[qdrant] Fetching latest release...");
   }
-  const release = await getRelease();
+  const release = VERSION_OVERRIDE ? null : await getRelease();
 
-  if (!release) {
+  if (!VERSION_OVERRIDE && !release) {
     console.error(`[qdrant] Could not fetch release from ${QDRANT_REPO}`);
     console.log(`\nMake sure release exists: https://github.com/${QDRANT_REPO}/releases`);
     process.exitCode = 1;
     return;
   }
 
-  console.log(`\nDownloading qdrant binaries (${release.tag})...\n`);
+  console.log(`\nDownloading qdrant binaries (${VERSION_OVERRIDE || release.tag})...\n`);
 
   fs.mkdirSync(BIN_DIR, { recursive: true });
 

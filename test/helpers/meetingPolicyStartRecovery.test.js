@@ -7,6 +7,7 @@ const { createRendererServer, installBrowserGlobals } = require("../lib/renderer
 function loadMeetingDetectionEngine() {
   const originalLoad = Module._load;
   Module._load = function loadWithMeetingMocks(request, parent, isMain) {
+    if (request === "./externalUrlOpener") return { openExternalUrl: async () => {} };
     if (request === "electron") {
       return { shell: { openExternal: async () => {} } };
     }

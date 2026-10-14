@@ -135,6 +135,7 @@ async function loadNoteEditor(t) {
   installBrowserGlobals(t, {
     window: {
       electronAPI: {
+        getNote: async () => ({ ...NOTE }),
         getSpeakerProfiles: async () => [],
         getSpeakerMappings: async () => [],
         getActions: async () => [TEMPLATE],

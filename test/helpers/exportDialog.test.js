@@ -55,6 +55,9 @@ const electronStub = {
 
 Module._load = function loadWithMocks(request, parent, isMain) {
   if (request === "electron") return electronStub;
+  if (parent?.filename === handlersModulePath && request === "./appData") {
+    return { getAppDataDirectory: () => os.tmpdir() };
+  }
   if (
     parent?.filename === handlersModulePath &&
     (request.startsWith("./") || request.startsWith("../"))

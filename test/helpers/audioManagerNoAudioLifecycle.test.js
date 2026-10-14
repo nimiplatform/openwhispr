@@ -2,84 +2,66 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadAudioManager } = require("./harness/audioManager");
 
-const LOCAL_WHISPER_SETTINGS = {
-  useLocalWhisper: true,
-  localTranscriptionProvider: "whisper",
-  whisperModel: "base",
-  cloudTranscriptionMode: "byok",
-  isSignedIn: false,
-};
-
-async function loadManagerClass(t, settings = LOCAL_WHISPER_SETTINGS) {
-  const { AudioManager } = await loadAudioManager(t, {
-    cachePrefix: "openwhispr-no-audio-lifecycle-test-",
-    settingsKey: "__noAudioLifecycleSettings",
-    settings,
+async function setup(t, transcribe) {
+  globalThis.__noSpeechTranscribe = transcribe;
+  t.after(() => delete globalThis.__noSpeechTranscribe);
+  const { createManager } = await loadAudioManager(t, {
+    cachePrefix: "openwhispr-nimi-no-speech-",
+    settingsKey: "__noSpeechSettings",
+    settings: { useCleanupModel: false },
+    mockModules: {
+      "/services/nimiRecording":
+        "export const transcribeNimiRecording = (...args) => globalThis.__noSpeechTranscribe(...args);",
+    },
   });
-  return AudioManager;
-}
-
-function createManager(AudioManager, failure) {
-  const order = [];
-  const saved = [];
-  const manager = Object.assign(Object.create(AudioManager.prototype), {
+  const results = [],
+    errors = [];
+  const manager = createManager({
     isProcessing: true,
     _localSpeechGateState: null,
-    pendingAssistantConversation: null,
-    pendingSelectionEdit: null,
-    lastAudioBlob: {},
-    processWithLocalWhisper: async () => {
-      throw failure;
-    },
-    processWithOpenWhisprCloud: async () => {
-      throw failure;
-    },
-    onStateChange: (state) => order.push(state.isProcessing ? "processing" : "idle"),
-    onNoAudio: () => order.push("no-audio"),
-    onError: () => order.push("error"),
-    saveFailedTranscription: (message, code) => saved.push({ message, code }),
+    getEffectiveSttLanguage: () => "",
+    getCustomDictionaryPrompt: () => "",
+    onStateChange() {},
+    onTranscriptionComplete: (value) => results.push(value),
+    onError: (error) => errors.push(error),
+    saveFailedTranscription: () => assert.fail("successful no-speech must not be saved as failure"),
   });
-  return { manager, order, saved };
+  return { manager, results, errors };
 }
 
-test("local silence becomes one no-audio outcome after processing is idle", async (t) => {
-  const AudioManager = await loadManagerClass(t);
-  const { manager, order, saved } = createManager(AudioManager, new Error("No audio detected"));
-
-  await manager.processAudio({ size: 256, type: "audio/webm" });
-
+test("typed Nimi no-speech settles once without a provider error or invented transcript", async (t) => {
+  const transcript = { status: "no-speech", text: "", language: "", words: [] };
+  const { manager, results, errors } = await setup(t, async () => ({ transcript, chunks: [] }));
+  await manager.processAudio(new Blob(["declared boundary fixture"], { type: "audio/wav" }));
   assert.equal(manager.isProcessing, false);
-  assert.deepEqual(order, ["idle", "no-audio"]);
-  assert.deepEqual(saved, []);
+  assert.deepEqual(errors, []);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].text, "");
+  assert.deepEqual(results[0].transcription, transcript);
 });
 
-test("dictionary-echo silence keeps the recording but shares the settled outcome", async (t) => {
-  const AudioManager = await loadManagerClass(t);
-  const { DICTIONARY_ECHO_CODE } = await import("../../src/utils/dictionaryEchoFilter.js");
-  const failure = new Error("No audio detected");
-  failure.code = DICTIONARY_ECHO_CODE;
-  const { manager, order, saved } = createManager(AudioManager, failure);
-
-  await manager.processAudio({ size: 256, type: "audio/webm" });
-
-  assert.deepEqual(order, ["idle", "no-audio"]);
-  assert.deepEqual(saved, [{ message: "No audio detected", code: DICTIONARY_ECHO_CODE }]);
-});
-
-test("Cloud finding no speech is the no-audio outcome and keeps the recording", async (t) => {
-  const AudioManager = await loadManagerClass(t, {
-    useLocalWhisper: false,
-    cloudTranscriptionMode: "openwhispr",
-    isSignedIn: true,
+test("canceling pending Nimi preparation discards a late transcript", async (t) => {
+  let finish, started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
   });
-  // cloud-transcribe's shape for the API's 422 (ipcHandlers.js).
-  const failure = Object.assign(new Error("No speech detected in audio"), {
-    code: "NO_SPEECH_DETECTED",
+  const { manager, results, errors } = await setup(t, async () => {
+    started();
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
   });
-  const { manager, order, saved } = createManager(AudioManager, failure);
-
-  await manager.processAudio({ size: 256, type: "audio/webm" });
-
-  assert.deepEqual(order, ["idle", "no-audio"]);
-  assert.deepEqual(saved, [{ message: "No speech detected in audio", code: "NO_SPEECH_DETECTED" }]);
+  const pending = manager.processAudio(
+    new Blob(["declared boundary fixture"], { type: "audio/wav" })
+  );
+  await ready;
+  manager.cancelProcessing();
+  finish({
+    transcript: { status: "transcribed", text: "Late result", language: "en", words: [] },
+    chunks: [],
+  });
+  await pending;
+  assert.deepEqual(results, []);
+  assert.deepEqual(errors, []);
+  assert.equal(manager.isProcessing, false);
 });

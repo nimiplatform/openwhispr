@@ -56,7 +56,7 @@ class DebugLogger {
 
     // Check if app is ready before accessing app.getPath()
     // This is critical because app.getPath() can hang or fail before app.whenReady()
-    if (!app.isReady()) {
+    if (!app?.isReady?.()) {
       // App not ready yet, will try again later via ensureFileLogging() or write()
       return;
     }
@@ -118,7 +118,7 @@ class DebugLogger {
 
   resolveConsoleLogging() {
     // Packaged Windows apps can inherit the launching shell's standard handles.
-    return process.platform !== "win32" || !app.isPackaged || hasConsoleLogOptIn();
+    return process.platform !== "win32" || Boolean(app && !app.isPackaged) || hasConsoleLogOptIn();
   }
 
   refreshLogLevel() {

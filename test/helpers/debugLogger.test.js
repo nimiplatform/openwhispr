@@ -42,7 +42,7 @@ test("debug log System Info header includes the app version", async () => {
     const contents = fs.readFileSync(logFile, "utf8");
     assert.match(contents, /System Info/);
     assert.match(contents, /appVersion/);
-    assert.match(contents, /9\.9\.9-test/);
+    assert.ok(contents.includes(require("../../package.json").version));
   } finally {
     delete require.cache[debugLoggerPath];
     if (originalLoggerCache) require.cache[debugLoggerPath] = originalLoggerCache;

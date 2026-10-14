@@ -19,12 +19,19 @@ const actualFixture = {
   vector: [0.12345678901234, -0.25, 0.75],
   spaceId: "declared-fixture-space",
 };
+const jobMetadata = {
+  scenarioType: "audio-speaker-embed",
+  submissionOutcome: "accepted",
+  artifacts: [],
+};
 function harness() {
   const calls = [];
+  const submitStarted = Promise.withResolvers();
   let selected = "loadout-A",
     revision = "1",
     submitGate,
-    result = actualFixture;
+    result = actualFixture,
+    canceled = false;
   const services = {
     aiConfig: {
       async get() {
@@ -45,21 +52,37 @@ function harness() {
       scenarioJobs: {
         async submit(spec, options) {
           calls.push(["submit", spec, options]);
+          submitStarted.resolve();
           if (submitGate) await submitGate;
-          return { job: { jobId: "speaker-test-job", status: "queued" } };
+          return { job: { ...jobMetadata, jobId: "speaker-test-job", status: "submitted" } };
         },
         async get(id) {
           calls.push(["get", id]);
-          return { job: { jobId: id, status: "completed", speakerEmbedding: result } };
+          return {
+            job: {
+              ...jobMetadata,
+              jobId: id,
+              status: canceled ? "canceled" : "completed",
+              ...(canceled ? { stopOutcome: "confirmed" } : { speakerEmbedding: result }),
+            },
+          };
         },
         async cancel(id) {
           calls.push(["cancel", id]);
+          canceled = true;
+          return {
+            job: { ...jobMetadata, jobId: id, status: "canceled", stopOutcome: "confirmed" },
+          };
         },
         async subscribe(id) {
           calls.push(["subscribe", id]);
           return {
             async *[Symbol.asyncIterator]() {
-              yield { job: { jobId: id, status: "completed" } };
+              yield {
+                eventType: "completed",
+                sequence: "1",
+                job: { ...jobMetadata, jobId: id, status: "completed" },
+              };
             },
             async cancel() {
               calls.push(["close"]);
@@ -75,6 +98,7 @@ function harness() {
     owner,
     calls,
     services,
+    submitStarted: submitStarted.promise,
     setSelection(value) {
       selected = value;
     },
@@ -98,8 +122,9 @@ test("original float samples reach the bounded public speaker Job and actual per
   const [, spec, options] = h.calls[0];
   assert.equal(spec.type, "audio-speaker-embed");
   assert.equal(spec.mimeType, "audio/wav");
-  assert.deepEqual(options, { timeoutMs: 120000 });
-  const wav = spec.audioSource.bytes;
+  assert.equal(typeof options.clientSubmissionId, "string");
+  assert.equal(options.timeoutMs, undefined);
+  const wav = Buffer.from(spec.audioSource.bytes);
   assert.equal(wav.readUInt16LE(20), 3);
   assert.equal(wav.length, 44 + 16000 * 8 * 4);
   assert.equal(wav.readFloatLE(44), source[16000 * 2]);
@@ -112,8 +137,8 @@ test("public subscription events are summaries and Get supplies the persisted fi
   h.services.ai.scenarioJobs.get = async (id) => ({
     job:
       ++reads === 1
-        ? { jobId: id, status: "running" }
-        : { jobId: id, status: "completed", speakerEmbedding: actualFixture },
+        ? { ...jobMetadata, jobId: id, status: "running" }
+        : { ...jobMetadata, jobId: id, status: "completed", speakerEmbedding: actualFixture },
   });
   assert.deepEqual(await h.owner.extractEmbeddingFromSamples(samples()), actualFixture);
   assert.ok(h.calls.some(([method]) => method === "subscribe"));
@@ -128,11 +153,13 @@ test("cancel during submission retires the returned Job and cannot deliver an ol
       release = resolve;
     })
   );
-  const pending = h.owner.extractEmbeddingFromSamples(samples(), { signal: controller.signal });
-  await new Promise(setImmediate);
+  const pending = h.owner.extractEmbeddingFromSamples(samples(), {
+    cancelSignal: controller.signal,
+  });
+  await h.submitStarted;
   controller.abort();
   release();
-  await assert.rejects(pending, { name: "AbortError" });
+  await assert.rejects(pending, (error) => error.jobId === "speaker-test-job");
   assert.ok(h.calls.some(([method, id]) => method === "cancel" && id === "speaker-test-job"));
 });
 test("Host invalidation and business ABA generations refuse late vectors", async () => {
@@ -152,7 +179,7 @@ test("Host invalidation and business ABA generations refuse late vectors", async
       })
     );
     const pending = h.owner.extractEmbeddingFromSamples(samples());
-    await new Promise(setImmediate);
+    await h.submitStarted;
     change(h);
     release();
     await assert.rejects(pending);
@@ -163,12 +190,16 @@ test("only the speaker execution selection matters, and malformed results do not
   const h = harness();
   h.services.ai.scenarioJobs.get = async (id) => {
     h.setRevision("unrelated-revision");
-    return { job: { jobId: id, status: "completed", speakerEmbedding: actualFixture } };
+    return {
+      job: { ...jobMetadata, jobId: id, status: "completed", speakerEmbedding: actualFixture },
+    };
   };
   assert.deepEqual(await h.owner.extractEmbeddingFromSamples(samples()), actualFixture);
   h.services.ai.scenarioJobs.get = async (id) => {
     h.setSelection("replacement-loadout");
-    return { job: { jobId: id, status: "completed", speakerEmbedding: actualFixture } };
+    return {
+      job: { ...jobMetadata, jobId: id, status: "completed", speakerEmbedding: actualFixture },
+    };
   };
   await assert.rejects(h.owner.extractEmbeddingFromSamples(samples()), {
     code: "SPEAKER_CONTEXT_CHANGED",

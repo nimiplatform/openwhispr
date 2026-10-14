@@ -19,6 +19,8 @@ require.cache[require.resolve("../../src/helpers/safeTempDir.js")] = {
   exports: { getSafeTempDir: () => tempDir },
 };
 
+const hostPlatform = process.platform;
+
 // Pin to linux-x64 so asset-config resolution behaves identically on any host
 Object.defineProperty(process, "platform", { value: "linux" });
 Object.defineProperty(process, "arch", { value: "x64" });
@@ -169,7 +171,9 @@ test("CUDA: resolves its exact asset from the pinned tag and installs binary + c
   const binDir = path.join(userDataDir, "bin", "whisper-cuda");
   const binaryPath = path.join(binDir, "whisper-server-linux-x64-cuda");
   assert.ok(fs.existsSync(binaryPath));
-  assert.ok(fs.statSync(binaryPath).mode & 0o100, "binary is executable");
+  // The host filesystem, unlike the mocked asset target, owns POSIX mode bits.
+  if (hostPlatform !== "win32")
+    assert.ok(fs.statSync(binaryPath).mode & 0o100, "binary is executable");
   assert.ok(fs.existsSync(path.join(binDir, "libggml-cuda.so")), "companion lib copied");
   assert.ok(!fs.existsSync(path.join(binDir, "README.md")), "unrelated files not copied");
   assert.equal(manager.getCudaBinaryPath(), binaryPath);
@@ -424,11 +428,7 @@ test("required libraries: a cached pack is incomplete when a required library is
 });
 
 test("required libraries: an incomplete archive cannot replace a working pack", async () => {
-  const packDir = seedPack("test-pack", [
-    "server-out",
-    "msvcp140.dll",
-    "vcruntime140.dll",
-  ]);
+  const packDir = seedPack("test-pack", ["server-out", "msvcp140.dll", "vcruntime140.dll"]);
   fs.writeFileSync(path.join(packDir, "server-out"), "working-binary");
 
   state.release = makeRelease("bin.zip");

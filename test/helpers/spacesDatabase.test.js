@@ -1462,7 +1462,9 @@ test("folders rebuild succeeds on a legacy DB with notes referencing folders", (
   let legacy;
   try {
     const BetterSqlite = require("better-sqlite3");
-    legacy = new BetterSqlite(path.join(userDataDir, "transcriptions.db"));
+    legacy = new BetterSqlite(
+      path.join(require("../../src/helpers/appData").getAppDataDirectory(), "transcriptions.db")
+    );
   } catch (error) {
     if (isNativeBindingUnavailable(error)) {
       t.skip("better-sqlite3 native binding is not available for this Node runtime");

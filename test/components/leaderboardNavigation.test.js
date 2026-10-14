@@ -26,7 +26,7 @@ test("the leaderboard is tabbed inside the Insights view", () => {
   assert.ok(insights.includes("<LeaderboardView"));
   assert.ok(insights.includes("syncService.syncAnalyticsNow()"));
   assert.ok(insights.includes("const authValidated = hasValidatedAuthContext()"));
-  assert.ok(insights.includes("isSignedIn &&\n    authValidated &&\n    insightsSyncEnabled"));
+  assert.match(insights, /isSignedIn &&\s+authValidated &&\s+insightsSyncEnabled/);
   assert.equal(insights.includes("syncPendingAnalytics"), false);
   assert.ok(insights.includes("onClick={() => void enableInsightsSync()}"));
   assert.ok(insights.includes('"insights.enableSync"'));

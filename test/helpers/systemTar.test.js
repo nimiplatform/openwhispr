@@ -2,7 +2,16 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 
+const Module = require("node:module");
+const originalLoad = Module._load;
+Module._load = function (name, parent, main) {
+  const value = originalLoad.call(this, name, parent, main);
+  return name === "../utils/process"
+    ? { ...value, killProcess: (child, signal) => child.kill(signal) }
+    : value;
+};
 const { resolveSystemTarExecutable, runSystemTar } = require("../../src/helpers/systemTar");
+Module._load = originalLoad;
 
 function makeChild({ closeOnKill = true } = {}) {
   const child = new EventEmitter();

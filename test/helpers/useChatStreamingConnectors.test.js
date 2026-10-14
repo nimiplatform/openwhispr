@@ -66,26 +66,22 @@ test("a send that throws withdraws a pending approval", async (t) => {
   t.after(() => reasoningService.destroy());
 
   let sawSlackTool = false;
-  t.mock.method(
-    reasoningService,
-    "processTextStreamingAI",
-    (_messages, _model, _provider, _config, tools) => {
-      sawSlackTool = Boolean(tools?.slack_send_message);
-      // Must stay an async generator so the hook's `for await` sees it; it
-      // throws before ever reaching a yield, which is the point of this test.
-      // eslint-disable-next-line require-yield
-      return (async function* () {
-        void tools.slack_send_message.execute(
-          { destination: "#eng", text: "Hi team" },
-          { toolCallId: "call-1", messages: [] }
-        );
-        while (Object.keys(approvals.useConnectorApprovalStore.getState().entries).length === 0) {
-          await new Promise((resolve) => setImmediate(resolve));
-        }
-        throw new Error("provider stream failed");
-      })();
-    }
-  );
+  t.mock.method(reasoningService, "processTextStreamingAI", (_messages, _config, tools) => {
+    sawSlackTool = Boolean(tools?.slack_send_message);
+    // Must stay an async generator so the hook's `for await` sees it; it
+    // throws before ever reaching a yield, which is the point of this test.
+    // eslint-disable-next-line require-yield
+    return (async function* () {
+      void tools.slack_send_message.execute(
+        { destination: "#eng", text: "Hi team" },
+        { toolCallId: "call-1", messages: [] }
+      );
+      while (Object.keys(approvals.useConnectorApprovalStore.getState().entries).length === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      throw new Error("provider stream failed");
+    })();
+  });
 
   let messages = [];
   const setMessages = (updater) => {

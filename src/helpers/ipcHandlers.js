@@ -2489,10 +2489,12 @@ class IPCHandlers {
 
     ipcMain.handle("leaderboard-copy-image", async (_event, dataUrl) => {
       try {
-        const { clipboard, nativeImage } = require("electron");
+        const { clipboard, ClipboardItem, nativeImage } = require("electron");
         const image = nativeImage.createFromBuffer(decodeLeaderboardPngDataUrl(dataUrl));
         if (image.isEmpty()) throw new Error("Leaderboard image could not be decoded");
-        clipboard.writeImage(image);
+        await clipboard.write([
+          new ClipboardItem({ "image/png": new Blob([image.toPNG()], { type: "image/png" }) }),
+        ]);
         return { success: true };
       } catch (error) {
         debugLogger.error(
@@ -4521,7 +4523,10 @@ class IPCHandlers {
         await current.close();
         await stopped;
         if (cancellation.jobs.some((job) => job.stopOutcome === "unconfirmed"))
-          throw Object.assign(new Error("Cancellation was requested, but the model has not confirmed it stopped."), { code: "NIMI_AUDIO_CANCEL_UNCONFIRMED" });
+          throw Object.assign(
+            new Error("Cancellation was requested, but the model has not confirmed it stopped."),
+            { code: "NIMI_AUDIO_CANCEL_UNCONFIRMED" }
+          );
         return { success: true, reason: "cancel-requested", jobs: cancellation.jobs };
       } catch (error) {
         await current.close();

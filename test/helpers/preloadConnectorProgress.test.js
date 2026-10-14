@@ -34,6 +34,13 @@ function loadPreloadApi() {
   vm.runInNewContext(source, {
     require: (specifier) => {
       if (specifier === "electron") return electron;
+      if (specifier === "@nimiplatform/kit/shell/electron/preload-cjs")
+        return {
+          installNimiElectronRuntimeBridge: (input) => {
+            assert.equal(input.contextBridge, electron.contextBridge);
+            assert.equal(input.ipcRenderer, ipcRenderer);
+          },
+        };
       throw new Error(`Unexpected preload dependency: ${specifier}`);
     },
     process,

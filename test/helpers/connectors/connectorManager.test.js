@@ -1280,11 +1280,12 @@ test("a login that changed during the round trip is kept, and the late one is re
   assert.deepEqual(revoked, [{ accessToken: "late" }]);
 });
 
-// The real loopback flow, with Electron's shell stubbed out.
+// The real loopback flow, with the external URL owner stubbed out.
 function loadLoopbackFlow() {
   const Module = require("node:module");
   const originalLoad = Module._load;
   Module._load = function loadWithElectronStub(request, parent, isMain) {
+    if (request === "./externalUrlOpener") return { openExternalUrl: async () => {} };
     if (request === "electron") return { shell: { openExternal: async () => {} } };
     return originalLoad.call(this, request, parent, isMain);
   };

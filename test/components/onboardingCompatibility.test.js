@@ -315,17 +315,3 @@ test("Linux onboarding does not show Screen Context", async (t) => {
 
   assert.doesNotMatch(markup, /dictationAgent\.screenContext\.title/);
 });
-
-test("provider setup stages mark dictation complete before Assistant", async (t) => {
-  const vite = await createOnboardingRenderer(t);
-  const { SetupStageStepper } = await vite.ssrLoadModule(
-    "/components/onboarding/ProviderSetupStep.tsx"
-  );
-
-  for (const stepId of ["byok-assistant", "local-assistant"]) {
-    const markup = renderToStaticMarkup(React.createElement(SetupStageStepper, { stepId }));
-
-    assert.match(markup, /data-icon="circle-check"/);
-    assert.doesNotMatch(markup, /data-icon="audio-lines"/);
-  }
-});

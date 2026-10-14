@@ -69,10 +69,6 @@ test("dynamic prose and identity values keep their own direction", () => {
 test("technical output values remain LTR inside an Arabic document", () => {
   const expectations = [
     ["src/components/DeveloperSection.tsx", /<code\s+dir="ltr"[\s\S]*?\{logPath\}/],
-    [
-      "src/components/TestConnectionButton.tsx",
-      /<code\s+dir="ltr"[^>]*>\s*\{errorInfo\.copyCommand\}/,
-    ],
     ["src/components/ui/TechnicalErrorDetails.tsx", /<pre\s+dir="ltr"[\s\S]*?\{text\}/],
     ["src/components/ui/NixOsPasteInfo.tsx", /<div\s+dir="ltr"[\s\S]*?<pre/],
     ["src/components/integrations/McpPane.tsx", /<CopyableCommand\s+command=\{MCP_URL\}/],
@@ -87,14 +83,6 @@ test("technical output values remain LTR inside an Arabic document", () => {
       /<kbd\s+dir="ltr"[\s\S]*?\{readableVoiceHotkey\}/,
     ],
     [
-      "src/components/EnterpriseProviderConfig.tsx",
-      /<select\s+dir="ltr"\s+value=\{store\.bedrockRegion\}/,
-    ],
-    [
-      "src/components/EnterpriseProviderConfig.tsx",
-      /<select\s+dir="ltr"\s+value=\{store\.vertexLocation\}/,
-    ],
-    [
       "src/components/notes/UploadAudioView.tsx",
       /<p\s+dir="ltr"[^>]*font-medium[^>]*>\s*\{file\.name\}/,
     ],
@@ -104,15 +92,6 @@ test("technical output values remain LTR inside an Arabic document", () => {
     ],
     ["src/components/ui/SidebarModal.tsx", /<span\s+dir="ltr"[\s\S]*?v\{version\}/],
     ["src/components/ui/ModelCardList.tsx", /<span\s+dir="ltr"[\s\S]*?\{model\.label\}/],
-    [
-      "src/components/onboarding/ProviderSetupStep.tsx",
-      /<span\s+dir="ltr">\s*\{models\.find[\s\S]*?\?\? selectedModel\}/,
-    ],
-    [
-      "src/components/onboarding/RequiredModelDownloadStep.tsx",
-      /<span\s+dir="ltr"[\s\S]*?\{info\?\.name \?\? modelId\}/,
-    ],
-    ["src/components/TranscriptionModelPicker.tsx", /<p\s+dir="ltr"[^>]*>\s*\{gpuFailReason\}/],
   ];
 
   for (const [file, pattern] of expectations) {
@@ -133,10 +112,6 @@ test("localized sentences isolate technical interpolations without changing word
     [
       "src/components/SettingsPage.tsx",
       /<BidiInterpolatedText[\s\S]*?resetToDefault[\s\S]*?value=\{formatHotkeyLabel\(effectiveDefaultHotkey\)\}/,
-    ],
-    [
-      "src/components/SettingsPage.tsx",
-      /<BidiInterpolatedText[\s\S]*?updates\.whatsNew[\s\S]*?value=\{updateInfo\.version\}/,
     ],
     [
       "src/components/MemberRoster.tsx",

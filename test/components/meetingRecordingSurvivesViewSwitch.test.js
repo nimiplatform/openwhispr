@@ -41,6 +41,8 @@ const NOTES = {
 };
 
 const MOCKS = {
+  "/services/nimiClient":
+    "export const prepareNimiAIWork = async (signal) => { signal?.throwIfAborted(); };",
   "/ui/useToast": `
     const toast = () => "1";
     export const useToast = () => ({ toast, dismiss() {} });
@@ -121,6 +123,7 @@ async function setup(t) {
 
   const calls = { stop: 0, send: [], updateNote: [], trackStops: 0 };
   const listeners = {};
+  let activeSessionId;
   const capture = (name) => (callback) => {
     listeners[name] = callback;
     return () => {
@@ -134,11 +137,10 @@ async function setup(t) {
       mode: "native",
       strategy: "native",
     }),
-    meetingTranscriptionStart: async () => ({
-      success: true,
-      systemAudioMode: "native",
-      systemAudioStrategy: "native",
-    }),
+    meetingTranscriptionStart: async ({ sessionId }) => {
+      activeSessionId = sessionId;
+      return { success: true, systemAudioMode: "native", systemAudioStrategy: "native" };
+    },
     meetingTranscriptionSetSystemAudioAvailable: async () => ({ success: true }),
     meetingTranscriptionStop: async () => {
       calls.stop += 1;
@@ -215,7 +217,13 @@ async function setup(t) {
   const openNote = (id) => React.act(async () => globalThis.__setActiveNoteId(id));
   const say = (text) =>
     React.act(async () =>
-      listeners.segment?.({ text, source: "mic", type: "final", timestamp: Date.now() })
+      listeners.segment?.({
+        text,
+        sessionId: activeSessionId,
+        source: "mic",
+        type: "final",
+        timestamp: Date.now(),
+      })
     );
   const micChunk = () => worklets[0].port.onmessage({ data: new ArrayBuffer(16) });
   const isRecording = () => store.useMeetingRecordingStore.getState().isRecording;
@@ -268,16 +276,15 @@ test("#1685: switching views and notes mid-recording never stops the recording",
   assert.equal(calls.stop, 0);
 
   // The floating pill's Stop (MeetingRecordingPill calls stopRecording() with no
-  // arguments) while another view is open: the transcript must still reach the note.
+  // arguments) while another view is open: main commits the terminal result;
+  // the renderer must retain its presentation without overwriting that commit.
   await show("home");
   await React.act(async () => store.stopRecording());
   assert.equal(calls.stop, 1);
-  const finalWrite = calls.updateNote
-    .filter(([id, updates]) => id === 11 && typeof updates.transcript === "string")
-    .at(-1);
-  assert.ok(finalWrite, "final transcript persisted with the notes view unmounted");
-  assert.match(finalWrite[1].transcript, /first words/);
-  assert.match(finalWrite[1].transcript, /said while on Home/);
+  assert.equal(store.useMeetingRecordingStore.getState().finalizationOutcome, "saved");
+  assert.equal(calls.updateNote.length, 0, "renderer must not rewrite main's terminal commit");
+  assert.match(store.useMeetingRecordingStore.getState().transcript, /first words/);
+  assert.match(store.useMeetingRecordingStore.getState().transcript, /said while on Home/);
 });
 
 // Control: the counters above are not vacuous, because an explicit Stop registers.

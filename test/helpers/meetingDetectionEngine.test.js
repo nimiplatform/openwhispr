@@ -11,6 +11,12 @@ function loadEngine() {
   delete require.cache[enginePath];
 
   Module._load = function loadWithMocks(request, parent, isMain) {
+    if (request === "./externalUrlOpener")
+      return {
+        openExternalUrl: async (url) => {
+          openedUrls.push(url);
+        },
+      };
     if (request === "electron") {
       return { shell: { openExternal: async (url) => openedUrls.push(url) } };
     }

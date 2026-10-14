@@ -1,67 +1,54 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-
+const { MockLanguageModelV3, simulateReadableStream } = require("ai/test");
 const { createRendererServer, installBrowserGlobals } = require("../lib/rendererTestHarness");
 
-// Mirrors the BYOK/local "tool-result" branch of ReasoningService.processTextStreamingAI:
-// a successful tool's object/array output must be forwarded as `metadata` on the
-// yielded `tool_result` chunk (the way the OpenWhispr Cloud path already does), so
-// tool-result cards (e.g. note cards) render for BYOK and local models too.
-
-function createOpenAiChunk(delta, finishReason = null) {
-  return {
-    id: "chatcmpl-tool-metadata-test",
-    object: "chat.completion.chunk",
-    created: 1,
-    model: "qwen3-4b-q4_k_m",
-    choices: [{ index: 0, delta, finish_reason: finishReason }],
-  };
-}
-
-function createOpenAiSseResponse(chunks, { finishReason = "stop", toolCall } = {}) {
-  const events = chunks
-    .map((content) => `data: ${JSON.stringify(createOpenAiChunk({ content }))}\n\n`)
-    .join("");
-  const toolEvent = toolCall
-    ? `data: ${JSON.stringify(
-        createOpenAiChunk({
-          tool_calls: [
+async function runToolMetadataScenario(t, cachePrefix, toolExecute, calledTool = "test_tool") {
+  installBrowserGlobals(t);
+  let steps = 0;
+  globalThis.__metadataModel = new MockLanguageModelV3({
+    doStream: async () => {
+      const first = steps++ === 0;
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "stream-start", warnings: [] },
+            ...(first
+              ? [{ type: "tool-call", toolCallId: "call-test", toolName: calledTool, input: "{}" }]
+              : [
+                  { type: "text-start", id: "answer" },
+                  { type: "text-delta", id: "answer", delta: "Answer" },
+                  { type: "text-end", id: "answer" },
+                ]),
             {
-              index: 0,
-              id: toolCall.id,
-              type: "function",
-              function: { name: toolCall.name, arguments: toolCall.arguments },
+              type: "finish",
+              finishReason: { unified: first ? "tool-calls" : "stop", raw: "stop" },
+              usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
             },
           ],
-        })
-      )}\n\n`
-    : "";
-  const finishEvent = `data: ${JSON.stringify(createOpenAiChunk({}, finishReason))}\n\n`;
-  return new Response(`${events}${toolEvent}${finishEvent}data: [DONE]\n\n`, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
+        }),
+      };
+    },
   });
-}
-
-async function loadReasoningService(t, cachePrefix) {
-  installBrowserGlobals(t);
-  const vite = await createRendererServer(t, { cachePrefix });
-  const reasoningService = (await vite.ssrLoadModule("/services/ReasoningService.ts")).default;
-  const { usePolicyStore } = await vite.ssrLoadModule("/stores/policyStore.ts");
-  usePolicyStore.setState({ status: "unmanaged", appVersion: "1.8.3", policy: null });
-  t.after(() => reasoningService.destroy());
-  return { reasoningService, vite };
-}
-
-async function collectAllChunks(stream) {
-  const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  return chunks;
-}
-
-async function runToolMetadataScenario(t, cachePrefix, toolExecute, calledTool = "test_tool") {
-  const { reasoningService, vite } = await loadReasoningService(t, cachePrefix);
+  t.after(() => {
+    delete globalThis.__metadataModel;
+  });
+  const vite = await createRendererServer(t, {
+    cachePrefix,
+    noExternal: ["@nimiplatform/sdk-adapter-vercel-ai"],
+    mockModules: {
+      "@nimiplatform/sdk-adapter-vercel-ai":
+        "export const createNimiLocalAppVercelLanguageModel=()=>globalThis.__metadataModel;",
+      "/stores/settingsStore": "export const getSettings=()=>({});",
+      "/config/prompts":
+        "export const getCleanupSystemPrompt=()=>'';export const wrapCleanupTranscript=x=>x;",
+      "/nimiClient": `export const getNimiClient=()=>({ai:{}}); export const prepareNimiAIWork=async()=>{};
+        export const assertNimiBusinessAIAllowed=async()=>{}; export const runNimiRequest=async()=>{};`,
+    },
+  });
+  const service = (await vite.ssrLoadModule("/services/ReasoningService.ts")).default;
   const { ToolRegistry } = await vite.ssrLoadModule("/services/tools/ToolRegistry.ts");
+  t.after(() => service.destroy());
   const registry = new ToolRegistry();
   registry.register({
     name: "test_tool",
@@ -70,39 +57,16 @@ async function runToolMetadataScenario(t, cachePrefix, toolExecute, calledTool =
     readOnly: true,
     execute: toolExecute,
   });
-
-  const originalFetch = globalThis.fetch;
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-  let fetchCalls = 0;
-  globalThis.fetch = async () => {
-    fetchCalls += 1;
-    if (fetchCalls === 1) {
-      return createOpenAiSseResponse([], {
-        finishReason: "tool_calls",
-        toolCall: { id: "call-test", name: calledTool, arguments: "{}" },
-      });
-    }
-    return createOpenAiSseResponse(["Answer"]);
-  };
-
-  const stream = reasoningService.processTextStreamingAI(
+  const chunks = [];
+  for await (const chunk of service.processTextStreamingAI(
     [{ role: "user", content: "hello" }],
-    "qwen3-4b-q4_k_m",
-    "lan",
-    {
-      systemPrompt: "Answer the user.",
-      lanUrl: "http://127.0.0.1:11434/v1",
-      disableThinking: true,
-    },
+    { systemPrompt: "Answer the user." },
     registry.toAISDKFormat()
-  );
-
-  const chunks = await collectAllChunks(stream);
-  const toolResult = chunks.find((chunk) => chunk.type === "tool_result");
-  assert.ok(toolResult, "expected a tool_result chunk");
-  return toolResult;
+  ))
+    chunks.push(chunk);
+  const result = chunks.find((chunk) => chunk.type === "tool_result");
+  assert.ok(result, "expected a tool_result chunk");
+  return result;
 }
 
 test("a successful object tool output is forwarded as metadata", async (t) => {
@@ -149,7 +113,7 @@ test("a failed tool output yields no metadata and keeps the error as displayText
   );
 
   assert.equal(toolResult.metadata, undefined);
-  assert.equal(toolResult.displayText, "Something failed");
+  assert.deepEqual(JSON.parse(toolResult.displayText), { error: "Something failed" });
 });
 
 test("a successful string tool output yields no metadata", async (t) => {
@@ -182,6 +146,6 @@ test("a call the SDK rejects still settles, with its error as displayText", asyn
   assert.equal(executed, false);
   assert.equal(toolResult.callId, "call-test");
   assert.equal(toolResult.toolName, "ghost_tool");
-  assert.match(toolResult.displayText, /^Error: .*ghost_tool/);
+  assert.match(toolResult.displayText, /(?:Error|error): .*ghost_tool/);
   assert.equal(toolResult.metadata, undefined);
 });

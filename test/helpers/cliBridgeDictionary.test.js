@@ -1,4 +1,5 @@
 const test = require("node:test");
+const { EventEmitter } = require("node:events");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -159,8 +160,9 @@ test("route validation errors respond with HTTP 400 validation_error", async (t)
   ctx.bridge.token = "test-token";
   ctx.bridge.port = 8200;
 
-  class MockResponse {
+  class MockResponse extends EventEmitter {
     constructor() {
+      super();
       this.statusCode = null;
       this.headers = {};
       this.body = "";
@@ -174,12 +176,12 @@ test("route validation errors respond with HTTP 400 validation_error", async (t)
     }
   }
 
-  const req = {
+  const req = Object.assign(new EventEmitter(), {
     socket: { remoteAddress: "127.0.0.1" },
     headers: { authorization: "Bearer test-token" },
     method: "GET",
     url: "/v1/notes/search",
-  };
+  });
   const res = new MockResponse();
 
   await ctx.bridge._handleRequest(req, res);
@@ -197,8 +199,9 @@ test("POST /v1/dictionary/update responds with HTTP 400 validation_error for inv
   ctx.bridge.token = "test-token";
   ctx.bridge.port = 8200;
 
-  class MockResponse {
+  class MockResponse extends EventEmitter {
     constructor() {
+      super();
       this.statusCode = null;
       this.headers = {};
       this.body = "";
@@ -212,7 +215,7 @@ test("POST /v1/dictionary/update responds with HTTP 400 validation_error for inv
     }
   }
 
-  const req = {
+  const req = Object.assign(new EventEmitter(), {
     socket: { remoteAddress: "127.0.0.1" },
     headers: { authorization: "Bearer test-token" },
     method: "POST",
@@ -225,7 +228,7 @@ test("POST /v1/dictionary/update responds with HTTP 400 validation_error for inv
         handler();
       }
     },
-  };
+  });
   const res = new MockResponse();
 
   await ctx.bridge._handleRequest(req, res);

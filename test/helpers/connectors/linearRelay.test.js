@@ -13,7 +13,7 @@ const {
 const RELAY = "https://openwhispr.com/auth/linear/callback";
 const silentLogger = { info() {}, warn() {}, error() {} };
 
-// The real loopback flow, with Electron's shell replaced so opening the
+// The real loopback flow, with the external URL owner replaced so opening the
 // browser only records the authorize URL.
 function loadLoopback(opened) {
   const paths = [
@@ -23,6 +23,12 @@ function loadLoopback(opened) {
   for (const path of paths) delete require.cache[path];
   const originalLoad = Module._load;
   Module._load = function loadWithElectronMock(request, parent, isMain) {
+    if (request === "./externalUrlOpener")
+      return {
+        openExternalUrl: async (url) => {
+          opened.push(url);
+        },
+      };
     if (request === "electron") return { shell: { openExternal: async (url) => opened.push(url) } };
     return originalLoad.call(this, request, parent, isMain);
   };

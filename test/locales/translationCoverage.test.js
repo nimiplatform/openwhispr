@@ -9,7 +9,7 @@ const SRC = path.join(__dirname, "../../src");
 const LOCALES = path.join(SRC, "locales");
 const NAMESPACES = ["translation", "prompts"];
 const PLURAL_SUFFIX = /_(zero|one|two|few|many|other)$/;
-const T_CALL = /\bt\(\s*(['"`])([A-Za-z0-9_.-]+)\1/g;
+const T_CALL = /\bt\(\s*(['"`])([A-Za-z0-9_.-]+)\1(?=\s*[,)])/g;
 // messageKey values are passed to t() as a variable, so the T_CALL scan
 // cannot see them and a typo would render as the raw key string.
 const MESSAGE_KEY = /\bmessageKey\s*[:=]\s*(['"`])([A-Za-z0-9_.-]+)\1/g;

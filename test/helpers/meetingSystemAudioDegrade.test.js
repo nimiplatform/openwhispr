@@ -25,6 +25,9 @@ function harness({ systemAudioHeard = false } = {}) {
   const handlers = {};
   const context = {
     Buffer,
+    meetingNimi: {},
+    meetingOwnerId: 7,
+    meetingSessionId: "meeting",
     meetingSystemAudioHeard: systemAudioHeard,
     meetingSystemAudioHandover: createMeetingSystemAudioHandover({ now: () => now }),
     meetingSystemAudioWatchdog: { detachCapture: () => events.push("detach") },
@@ -52,7 +55,8 @@ function harness({ systemAudioHeard = false } = {}) {
   return {
     events,
     degrade: context.degrade,
-    sendRenderer: (buffer) => handlers["meeting-transcription-send"]({}, buffer, "system"),
+    sendRenderer: (buffer) =>
+      handlers["meeting-transcription-send"]({ sender: { id: 7 } }, buffer, "system", "meeting"),
     advance: (ms) => {
       now += ms;
     },

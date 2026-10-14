@@ -87,6 +87,8 @@ async function setup(t) {
   const vite = await createRendererServer(t, {
     cachePrefix: "pr2040-renderer-warning-review-",
     mockModules: {
+      "/services/nimiClient":
+        "export const prepareNimiAIWork = async (signal) => { signal?.throwIfAborted(); };",
       "/ui/useToast": `const toast = (props) => { globalThis.__interruptionToasts.push({ ...props, visibility: globalThis.document.visibilityState }); return String(globalThis.__interruptionToasts.length); }; const dismiss = (id) => globalThis.__interruptionDismissals.push(id); export const useToast = () => ({ toast, dismiss });`,
     },
   });

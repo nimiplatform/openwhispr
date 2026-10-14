@@ -2,248 +2,70 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createRendererServer, installBrowserGlobals } = require("../lib/rendererTestHarness");
 
-function localConfig() {
-  return {
-    useLocalWhisper: true,
-    localTranscriptionProvider: "nvidia",
-    whisperModel: "base",
-    parakeetModel: "parakeet-tdt-0.6b-v3",
-    cohereModel: "command-a-transcribe",
-    isOpenWhisprCloud: false,
-    getApiKey: () => "",
-    cloudTranscriptionProvider: "openai",
-    cloudTranscriptionBaseUrl: "",
-    cloudTranscriptionModel: "whisper-1",
-    language: "en",
-    transcriptionMode: "providers",
+async function load(t, result) {
+  installBrowserGlobals(t);
+  const calls = [];
+  globalThis.__fileTranscriptionRequest = async (...args) => {
+    calls.push(args);
+    if (result instanceof Error) throw result;
+    return result;
   };
-}
-
-async function loadFileTranscription(t) {
-  const { window } = installBrowserGlobals(t);
+  t.after(() => {
+    delete globalThis.__fileTranscriptionRequest;
+  });
   const vite = await createRendererServer(t, {
-    cachePrefix: "openwhispr-file-diarization-warning-test-",
+    cachePrefix: "openwhispr-file-nimi-test-",
     mockModules: {
-      "/lib/auth": "export const withSessionRefresh = (fn) => fn();",
+      "/nimiClient":
+        "export const runNimiRequest=(...args)=>globalThis.__fileTranscriptionRequest(...args);",
     },
   });
-  const mod = await vite.ssrLoadModule("/services/fileTranscription.ts");
-  window.electronAPI.transcribeAudioFile = async () => ({
-    success: true,
-    text: "Plain transcript",
-  });
-  return { window, ...mod };
+  return { calls, ...(await vite.ssrLoadModule("/services/fileTranscription.ts")) };
 }
 
-test("keeps the transcript and warns when local speaker identification fails", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  window.electronAPI.diarizeAudioFile = async () => ({
-    success: false,
-    error: "Speaker identification failed",
-  });
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: true,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(result.success, true);
-  assert.equal(result.text, "Plain transcript");
-  assert.equal(result.diarizationWarning, true);
-});
-
-test("keeps the transcript and warns when speaker labels cannot be merged", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  window.electronAPI.diarizeAudioFile = async () => ({
+for (const result of [
+  { success: true, text: "Plain transcript", diarizationWarning: true, durationSeconds: 1188 },
+  {
     success: true,
-    segments: [{ speaker: "speaker_00", start: 0, end: 2 }],
-  });
-  window.electronAPI.mergeSpeakerText = async () => ({
-    success: false,
-    error: "Merge failed",
-  });
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: true,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(result.success, true);
-  assert.equal(result.text, "Plain transcript");
-  assert.equal(result.diarizationWarning, true);
-});
-
-// The diarize handler returns no segments when it discards a collapsed run.
-test("warns and keeps the measured duration when diarization returns no segments", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  let mergeCalls = 0;
-  window.electronAPI.diarizeAudioFile = async () => ({
-    success: true,
-    segments: [],
-    durationSeconds: 1188,
-  });
-  window.electronAPI.mergeSpeakerText = async () => {
-    mergeCalls += 1;
-    return { success: true, text: "Speaker 1: Plain transcript" };
-  };
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: true,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(mergeCalls, 0);
-  assert.equal(result.text, "Plain transcript");
-  assert.equal(result.diarizationWarning, true);
-  assert.equal(result.durationSeconds, 1188);
-});
-
-test("does not warn when speaker labels are merged", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  window.electronAPI.diarizeAudioFile = async () => ({
-    success: true,
-    segments: [{ speaker: "speaker_00", start: 0, end: 2 }],
-  });
-  window.electronAPI.mergeSpeakerText = async () => ({
-    success: true,
-    text: "Speaker 1: Plain transcript",
-  });
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: true,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(result.text, "Speaker 1: Plain transcript");
-  assert.equal(result.diarizationWarning, undefined);
-});
-
-test("does not warn when speaker detection is off", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  let diarizeCalls = 0;
-  window.electronAPI.diarizeAudioFile = async () => {
-    diarizeCalls += 1;
-    return { success: false };
-  };
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: false,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(diarizeCalls, 0);
-  assert.equal(result.diarizationWarning, undefined);
-});
-
-test("does not warn when the provider applied its own speaker labels", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  window.electronAPI.transcribeAudioFile = async () => ({
-    success: true,
-    text: "[Speaker 1] Hola",
+    text: "Speaker 1: Hello",
     diarized: true,
-  });
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: true,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(result.diarizationWarning, undefined);
-});
-
-test("keeps the transcript and warns when the merge throws", async (t) => {
-  const { window, transcribeFileWithSpeakers } = await loadFileTranscription(t);
-  window.electronAPI.diarizeAudioFile = async () => ({
+    segments: [{ text: "Hello", speaker: "Speaker 1", start: 0, end: 2 }],
+  },
+  {
     success: true,
-    segments: [{ speaker: "speaker_00", start: 0, end: 2 }],
+    text: "Partial transcript",
+    speakerMatchingWarning: true,
+    warning: "Some chunks failed",
+    failedChunks: 1,
+    totalChunks: 2,
+  },
+  { success: true, status: "no-speech", text: "" },
+  { success: false, code: "TRANSCRIPTION_FAILED", error: "Host rejected audio" },
+]) {
+  test(`Host transcription outcome is retained: ${JSON.stringify(result)}`, async (t) => {
+    const h = await load(t, result);
+    assert.deepEqual(
+      await h.transcribeFileWithSpeakers(
+        "/tmp/audio.wav",
+        { language: "en" },
+        { enabled: true, numSpeakers: 2 }
+      ),
+      result
+    );
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0][1].diarization, true);
+    assert.equal(h.calls[0][1].timestamps, true);
+    assert.equal(h.calls[0][1].numSpeakers, 2);
   });
-  window.electronAPI.mergeSpeakerText = async () => {
-    throw new Error("merge crashed");
-  };
-
-  const result = await transcribeFileWithSpeakers("/tmp/audio.wav", localConfig(), {
-    enabled: true,
-    localModelsReady: true,
-    numSpeakers: null,
-  });
-
-  assert.equal(result.text, "Plain transcript");
-  assert.equal(result.diarizationWarning, true);
-});
-
-test("fetches the local speaker models before a run that needs them", async (t) => {
-  const { resolveDiarizationSettings } = await loadFileTranscription(t);
-  let ensureCalls = 0;
-
-  const settings = await resolveDiarizationSettings({
-    enabled: true,
-    modelsReady: false,
-    numSpeakers: null,
-    config: localConfig(),
-    ensureModels: async () => {
-      ensureCalls += 1;
-      return true;
-    },
-  });
-
-  assert.equal(ensureCalls, 1);
-  assert.deepEqual(settings, { enabled: true, localModelsReady: true, numSpeakers: null });
-});
-
-test("does not fetch local models when the provider diarizes server-side", async (t) => {
-  const { resolveDiarizationSettings } = await loadFileTranscription(t);
-  let ensureCalls = 0;
-
-  const settings = await resolveDiarizationSettings({
-    enabled: true,
-    modelsReady: false,
-    numSpeakers: 2,
-    config: { ...localConfig(), useLocalWhisper: false, cloudTranscriptionProvider: "openai" },
-    ensureModels: async () => {
-      ensureCalls += 1;
-      return true;
-    },
-  });
-
-  assert.equal(ensureCalls, 0);
-  assert.deepEqual(settings, { enabled: true, localModelsReady: false, numSpeakers: 2 });
-});
-
-test("does not fetch local models when speaker detection is off", async (t) => {
-  const { resolveDiarizationSettings } = await loadFileTranscription(t);
-  let ensureCalls = 0;
-
-  const settings = await resolveDiarizationSettings({
-    enabled: false,
-    modelsReady: false,
-    numSpeakers: null,
-    config: localConfig(),
-    ensureModels: async () => {
-      ensureCalls += 1;
-      return true;
-    },
-  });
-
-  assert.equal(ensureCalls, 0);
-  assert.equal(settings.enabled, false);
-});
-
-test("reports models unavailable when the download fails", async (t) => {
-  const { resolveDiarizationSettings } = await loadFileTranscription(t);
-
-  const settings = await resolveDiarizationSettings({
-    enabled: true,
-    modelsReady: false,
-    numSpeakers: null,
-    config: localConfig(),
-    ensureModels: async () => false,
-  });
-
-  assert.equal(settings.localModelsReady, false);
+}
+test("Host cancellation remains cancellation, not a successful plain transcript", async (t) => {
+  const h = await load(t, new DOMException("Cancelled", "AbortError"));
+  await assert.rejects(
+    h.transcribeFileWithSpeakers(
+      "/tmp/audio.wav",
+      { language: "en" },
+      { enabled: true, numSpeakers: null }
+    ),
+    { name: "AbortError" }
+  );
 });

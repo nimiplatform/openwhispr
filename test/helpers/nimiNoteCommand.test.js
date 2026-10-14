@@ -63,9 +63,15 @@ test("the actual Host note command fixes its business owners and cancellation re
   assert.equal(options.semanticSearch, semanticSearch);
   assert.equal(options.folderId, 12);
   assert.equal(options.query, "note query");
-  assert.equal(ai.commandHandlers["openwhispr.ai.cancel"](input("query-1")).canceled, true);
+  assert.deepEqual(await ai.commandHandlers["openwhispr.ai.cancel"](input("query-1")), {
+    requested: true,
+    jobs: [],
+  });
   await assert.rejects(pending, { name: "AbortError" });
-  assert.equal(ai.commandHandlers["openwhispr.ai.cancel"](input("query-1")).canceled, false);
+  assert.deepEqual(await ai.commandHandlers["openwhispr.ai.cancel"](input("query-1")), {
+    requested: false,
+    jobs: [],
+  });
 });
 test("Host invalidation aborts old work while fresh local searches remain available", async () => {
   ai.bindServices({});
@@ -99,8 +105,7 @@ test("Host invalidation aborts old work while fresh local searches remain availa
     conversations: [{ id: 2 }],
     mode: "keyword",
   });
-  await assert.rejects(
-    ai.commandHandlers["openwhispr.ai.transcribe"](input("ai-no-session")),
-    /session is unavailable/
-  );
+  await assert.rejects(ai.commandHandlers["openwhispr.ai.transcribe"](input("ai-no-session")), {
+    code: "NIMI_SESSION_UNAVAILABLE",
+  });
 });

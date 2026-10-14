@@ -485,8 +485,6 @@ export function useChatStreaming({
           }));
         }
 
-        const llmMessages = [{ role: "system", content: systemPrompt }, ...history];
-
         const assistantId = crypto.randomUUID();
         setMessages((prev) => [
           ...prev,
@@ -516,9 +514,23 @@ export function useChatStreaming({
           contentFlushTimer = setTimeout(flushContentNow, STREAM_FLUSH_INTERVAL_MS);
         };
 
+        let nimiTranscript: import("ai").ModelMessage[] | undefined;
+        const finishCancelledStream = async () => {
+          flushContentNow();
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId ? { ...message, isStreaming: false } : message
+            )
+          );
+          // Navigation retains the visible reply; an explicit Stop never delivers or persists it.
+          const explicitlyCancelled = explicitCancelGenerationRef.current > sendGeneration;
+          if (!explicitlyCancelled && fullContent.trim().length > 0) {
+            const finalMsg = messagesRef.current.find((m) => m.id === assistantId);
+            await onStreamComplete?.(assistantId, fullContent, finalMsg?.toolCalls, nimiTranscript);
+          }
+        };
         try {
           let stream: AsyncGenerator<AgentStreamChunk>;
-          let nimiTranscript: import("ai").ModelMessage[] | undefined;
           // Each call's own step text on the AI SDK path, whose tool results
           // carry only the model-facing output (the cloud path yields it).
           const toolDisplayTexts = new Map<string, string>();
@@ -528,7 +540,7 @@ export function useChatStreaming({
               toolScope.createContext({ messageId: assistantId, toolCallId, signal: abortSignal }),
             (id, text) => toolDisplayTexts.set(id, text)
           );
-          stream = ReasoningService.processTextStreamingAI(llmMessages, { systemPrompt }, aiTools);
+          stream = ReasoningService.processTextStreamingAI(history, { systemPrompt }, aiTools);
 
           for await (const chunk of stream) {
             if (!mountedRef.current) {
@@ -605,27 +617,7 @@ export function useChatStreaming({
           }
 
           if (cancelled() || !mountedRef.current) {
-            flushContentNow();
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId ? { ...message, isStreaming: false } : message
-              )
-            );
-            // An unmount mid-stream (page navigation) keeps the partial reply in
-            // history so the saved conversation matches what the user last saw;
-            // an explicit cancel drops it. The unmount cleanup cancels too, so
-            // cancelled() alone cannot tell the two apart. Neither path may run
-            // the per-request delivery hook.
-            const explicitlyCancelled = explicitCancelGenerationRef.current > sendGeneration;
-            if (!explicitlyCancelled && fullContent.trim().length > 0) {
-              const finalMsg = messagesRef.current.find((m) => m.id === assistantId);
-              await onStreamComplete?.(
-                assistantId,
-                fullContent,
-                finalMsg?.toolCalls,
-                nimiTranscript
-              );
-            }
+            await finishCancelledStream();
             return;
           }
 
@@ -658,12 +650,7 @@ export function useChatStreaming({
           }
         } catch (error) {
           if (cancelled()) {
-            flushContentNow();
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId ? { ...message, isStreaming: false } : message
-              )
-            );
+            await finishCancelledStream();
           } else {
             cancelContentFlush();
             logger.error(

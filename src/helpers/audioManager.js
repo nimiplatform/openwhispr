@@ -47,6 +47,7 @@ import {
 import { usePolicyStore } from "../stores/policyStore";
 
 import { transcriptionFailureOutcome } from "./transcriptionFailureOutcome";
+import { assertValidCleanupOutput } from "../utils/cleanupOutput";
 
 import { shouldRunTranslateStep } from "./translationChain";
 import { detectAgentName, stripAgentAddress } from "../config/agentDetection";
@@ -1917,10 +1918,20 @@ class AudioManager {
     }
     let output = text;
     if (settings.useCleanupModel) {
-      output = await ReasoningService.processText(text, "", agentName, {
-        signal,
-        systemPrompt: resolvePrompt("cleanup", promptOptions),
-      });
+      try {
+        output = await ReasoningService.processText(text, "", agentName, {
+          signal,
+          systemPrompt: resolvePrompt("cleanup", promptOptions),
+          requireCompleteOutput: true,
+        });
+        signal?.throwIfAborted();
+        if (!settings.customPrompts?.cleanup?.trim()) assertValidCleanupOutput(text, output);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error?.name === "AbortError" || wasCancelled()) throw error;
+        this.pendingCleanupFailure = cleanupFailureFromError(error);
+        output = text;
+      }
       if (wasCancelled()) return text;
     }
     if (
@@ -1929,6 +1940,7 @@ class AudioManager {
     ) {
       output = await ReasoningService.processText(output, "", agentName, {
         signal,
+        requireCompleteOutput: true,
         systemPrompt: resolvePrompt("translate", {
           ...promptOptions,
           targetLanguageLabel: getLanguageLabel(settings.translationTargetLanguage),

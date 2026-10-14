@@ -362,10 +362,10 @@ function makeCaptureHarness({ readClipboard }) {
   const writes = [];
   const clipboardManager = {
     runClipboardOperation: (operation) => operation(),
-    _saveClipboard: () => ({ type: "text", data: "user clipboard" }),
-    _restoreClipboard: () => {},
-    _writeClipboardTextAll: (text) => writes.push(text),
-    _readClipboardTextAll: () => readClipboard(writes),
+    _saveClipboard: async () => ({ type: "text", data: "user clipboard" }),
+    _restoreClipboard: async () => {},
+    _writeClipboardTextAll: async (text) => writes.push(text),
+    _readClipboardTextAll: async () => readClipboard(writes),
   };
   const manager = new SelectionManager({
     clipboardManager,
@@ -966,10 +966,10 @@ function makeMacClipboardHarness({ copyOutput = "COPY_OK 42 Dia", copied = null 
     runClipboardOperation: (operation) => operation(),
     resolveFastPasteBinary: () => "/bin/macos-fast-paste",
     isTerminalSignature: (signature) => /ghostty|iterm|terminal/i.test(signature || ""),
-    _saveClipboard: () => ({ type: "text", data: "user clipboard" }),
-    _restoreClipboard: () => {},
-    _writeClipboardTextAll: (text) => writes.push(text),
-    _readClipboardTextAll: () => {
+    _saveClipboard: async () => ({ type: "text", data: "user clipboard" }),
+    _restoreClipboard: async () => {},
+    _writeClipboardTextAll: async (text) => writes.push(text),
+    _readClipboardTextAll: async () => {
       if (writes.length === 0) return ["user clipboard"];
       return copySent && copied !== null ? [copied, writes[0]] : [writes[0]];
     },

@@ -11,6 +11,35 @@ capability_contract_refs:
   - text.embed
   - audio.speaker.embed
 required_standardized_feature_refs: []
+safety_profile:
+  intended_audience: general
+  content_descriptors:
+    - unmoderated-shared-content
+  ai:
+    direct_interaction: true
+    interaction_notice: absent
+    risk_features: []
+    subject_notice: not-applicable
+    outputs:
+      - modality: text
+        exposure: publishable
+        publication_control: user-confirmed
+        in_product_notice: absent
+        export_visible_marking: absent
+        machine_readable_marking: absent
+  data_practices:
+    publisher_direct_external_network: true
+    telemetry:
+      - usage-analytics
+    third_party_account: optional
+    user_content_sharing: public
+    commercial_features:
+      - subscription
+    sensitive_data_categories:
+      - contacts
+      - biometric
+  high_impact_decision_uses:
+    - biometric-identification
 storage_policy:
   kind: app-owned-os-storage
   os_storage_disclosure:

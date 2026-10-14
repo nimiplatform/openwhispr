@@ -61,19 +61,13 @@ const EXPECTED_SHARED_FIELD_DIRECTIONS = {
   "src/components/CreateTeamDialog.tsx": ["auto"],
   "src/components/CreateWorkspaceDialog.tsx": ["auto"],
   "src/components/DictionaryView.tsx": ["auto", "auto", "auto"],
-  "src/components/EnterpriseProviderConfig.tsx": ["ltr", "ltr", "ltr", "ltr", "ltr", "ltr"],
   "src/components/ForgotPasswordView.tsx": ["ltr"],
   "src/components/InviteTeammateDialog.tsx": ["ltr"],
   "src/components/LeaderboardSection.tsx": ["ltr"],
-  "src/components/OpenAICompatiblePanel.tsx": ["ltr"],
-  "src/components/SelfHostedPanel.tsx": ["ltr", "ltr"],
-  "src/components/SettingsPage.tsx": ["ltr", "ltr", "ltr", "ltr", "ltr", "ltr"],
   "src/components/SnippetsView.tsx": ["auto", "auto", "auto", "auto"],
-  "src/components/TranscriptionModelPicker.tsx": ["ltr", "ltr", "ltr"],
   "src/components/notes/ActionManagerDialog.tsx": ["auto", "auto", "auto"],
   "src/components/notes/DeleteSpaceDialog.tsx": ["auto"],
   "src/components/notes/UploadAudioView.tsx": ["auto"],
-  "src/components/onboarding/ProviderSetupStep.tsx": ["ltr", "ltr", "ltr", "ltr", "ltr", "ltr"],
   "src/components/settings/DictationAgentSettings.tsx": ["auto"],
   "src/components/settings/EnterpriseCheckoutDialog.tsx": ["inherit"],
   "src/components/settings/ProfileSection.tsx": ["auto", "ltr", "ltr", "ltr"],
@@ -101,6 +95,8 @@ const EXPECTED_NATIVE_FIELD_DIRECTIONS = {
   "src/components/chat/IssueApprovalFields.tsx": ["auto", "auto"],
   "src/components/notes/ActionManagerDialog.tsx": ["auto", "auto"],
   "src/components/notes/AddNotesToFolderDialog.tsx": ["auto"],
+  // Selection checkbox, not a textual input.
+  "src/components/notes/ImportedTranscript.tsx": ["inherit"],
   "src/components/notes/MeetingTranscriptChat.tsx": ["ltr", "auto"],
   "src/components/notes/NoteEditor.tsx": ["auto", "auto"],
   "src/components/notes/NoteParticipants.tsx": ["auto"],
@@ -166,10 +162,6 @@ test("native text fields use the same reviewed direction policy", () => {
 test("representative prose, identity, secret, and rich-editor surfaces keep their policy", () => {
   assert.match(
     source("src/components/AuthenticationStep.tsx"),
-    /<Input\s+dir="ltr"\s+type="password"/
-  );
-  assert.match(
-    source("src/components/onboarding/ProviderSetupStep.tsx"),
     /<Input\s+dir="ltr"\s+type="password"/
   );
   assert.match(

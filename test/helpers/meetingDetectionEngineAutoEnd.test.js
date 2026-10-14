@@ -5,6 +5,7 @@ const { EventEmitter } = require("node:events");
 
 const originalLoad = Module._load;
 Module._load = function loadWithElectronStub(request, parent, isMain) {
+  if (request === "./externalUrlOpener") return { openExternalUrl: async () => {} };
   if (request === "electron") {
     return {
       shell: { openExternal: async () => undefined },

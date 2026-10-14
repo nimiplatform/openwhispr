@@ -86,13 +86,17 @@
     "!**/node_modules/**/.github/**"
   ],
   "asarUnpack": [
+    "**/*.{node,dylib,dll}",
     "**/node_modules/ffmpeg-static/**/*",
     "**/node_modules/ps-list/**/*",
     "**/node_modules/better-sqlite3/**/*",
     "**/node_modules/@napi-rs/keyring/**/*"
   ],
   "extraResources": [
-    ".env",
+    {
+      "from": "resources/licenses",
+      "to": "licenses"
+    },
     {
       "from": "src/assets",
       "to": "src/assets",

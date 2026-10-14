@@ -15,11 +15,11 @@
  */
 
 const fs = require("fs");
+const crypto = require("node:crypto");
 const path = require("path");
 const {
   downloadFile,
   extractZip,
-  fetchLatestRelease,
   setExecutable,
 } = require("./lib/download-utils");
 
@@ -81,33 +81,26 @@ async function main() {
 
   const tagToFind = VERSION_OVERRIDE || readPinnedTag();
   console.log(`\n[windows-mic-listener] Using pinned version: ${tagToFind}`);
-  const release = await fetchLatestRelease(REPO, { tagPrefix: tagToFind });
-
-  if (!release) {
-    failDownload(`Could not find a release matching: ${tagToFind}`);
-    return;
+  if (!/^windows-mic-listener-v\d+\.\d+\.\d+$/.test(tagToFind)) {
+    throw new Error("Invalid Windows mic listener release tag");
   }
-
-  // Find the zip asset
-  const zipAsset = release.assets.find((a) => a.name === ZIP_NAME);
-  if (!zipAsset) {
-    failDownload(
-      `Release ${release.tag} does not contain ${ZIP_NAME} ` +
-        `(available: ${release.assets.map((a) => a.name).join(", ")})`
-    );
-    return;
-  }
-
-  console.log(`\nDownloading Windows mic listener (${release.tag})...\n`);
+  const archiveUrl = `https://github.com/${REPO}/releases/download/${tagToFind}/${ZIP_NAME}`;
+  console.log(`\nDownloading Windows mic listener (${tagToFind})...\n`);
 
   // Ensure bin directory exists
   fs.mkdirSync(BIN_DIR, { recursive: true });
 
   const zipPath = path.join(BIN_DIR, ZIP_NAME);
-  console.log(`  Downloading from: ${zipAsset.url}`);
+  console.log(`  Downloading from: ${archiveUrl}`);
 
   try {
-    await downloadFile(zipAsset.url, zipPath);
+    await downloadFile(archiveUrl, zipPath);
+    if (tagToFind === "windows-mic-listener-v1.1.0") {
+      const actual = crypto.createHash("sha256").update(fs.readFileSync(zipPath)).digest("hex");
+      if (actual !== "5a75ce40e3c768840545fd85aa352742074b0e32cf0b22061e9432004588786c") {
+        throw new Error("Pinned Windows mic listener archive checksum mismatch");
+      }
+    }
 
     // Extract zip
     const extractDir = path.join(BIN_DIR, "temp-windows-mic-listener");
@@ -134,7 +127,7 @@ async function main() {
 
     const stats = fs.statSync(outputPath);
     console.log(
-      `\n[windows-mic-listener] Successfully downloaded ${release.tag} (${Math.round(stats.size / 1024)}KB)`
+      `\n[windows-mic-listener] Successfully downloaded ${tagToFind} (${Math.round(stats.size / 1024)}KB)`
     );
   } catch (error) {
     // Cleanup on failure
