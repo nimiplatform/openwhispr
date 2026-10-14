@@ -5,7 +5,13 @@
 Current delivery: [1.10.5](https://github.com/nimiplatform/openwhispr/releases/tag/v1.10.5)
 is published through the protected tag workflow. Exact package, license, digest
 and build-provenance checks passed. [Registry PR 105](https://github.com/nimiplatform/nimi-app-registry/pull/105)
-completed final checks and merged after explicit human approval for Windows x86_64 / stable, accepting the recorded limits. Catalog discovery passed and installation is queued. Final published bytes are
+completed final checks and merged after explicit human approval for Windows x86_64 / stable, accepting the recorded limits. Catalog discovery, download,
+verification and first installation passed. Home launched the new `verified`
+1.10.5 package, and its Nimi Access became ready. Windows then displayed a new
+network-access prompt for this different managed executable path; it was left
+for the user. Catalog business acceptance is pending that system interaction.
+The local-imported installation and business data have not been removed.
+Final published bytes are
 downloaded and verified locally. Home's Update from local file completed the
 1.10.4 to 1.10.5 update on Nimi 0.2.4 and displayed Installed 1.10.5. Home then
 launched the exact new managed package. After the user handled Windows' network
