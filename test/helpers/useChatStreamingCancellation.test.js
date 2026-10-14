@@ -237,9 +237,12 @@ test("unmount persists the received partial reply without delivering it", async 
   assert.equal(delivered, 0);
   assert.equal(h.getMessages()[0].isStreaming, false);
 });
-test("screen attachments use the Nimi model image part without fake prompt claims", async (t) => {
+test("screen attachments pair the Nimi model image part with screen context", async (t) => {
   const requests = [];
-  const h = await renderChatStreaming(t, { onRequest: (...args) => requests.push(args) });
+  const h = await renderChatStreaming(t, {
+    settings: { uiLanguage: "en" },
+    onRequest: (...args) => requests.push(args),
+  });
   await h.captured.sendToAI(
     "What is on screen?",
     [{ id: "user-1", role: "user", content: "What is on screen?", isStreaming: false }],
@@ -250,5 +253,19 @@ test("screen attachments use the Nimi model image part without fake prompt claim
     { type: "text", text: "What is on screen?" },
     { type: "image", image: "base64-image", mediaType: "image/png" },
   ]);
+  assert.match(requests[0][1].systemPrompt, /SCREEN CONTEXT:/);
+});
+
+test("text-only requests do not claim screen context", async (t) => {
+  const requests = [];
+  const h = await renderChatStreaming(t, {
+    settings: { uiLanguage: "en" },
+    onRequest: (...args) => requests.push(args),
+  });
+  await h.captured.sendToAI("Hello", [
+    { id: "user-1", role: "user", content: "Hello", isStreaming: false },
+  ]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0].at(-1).content, "Hello");
   assert.doesNotMatch(requests[0][1].systemPrompt, /SCREEN CONTEXT:/);
 });

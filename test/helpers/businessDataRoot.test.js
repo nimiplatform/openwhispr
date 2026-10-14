@@ -10,7 +10,9 @@ test(
   "Windows business root remains stable when AppData or technical profile changes",
   { skip: process.platform !== "win32" },
   () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "nimi-business-home-"));
+    const home = fs.realpathSync.native(
+      fs.mkdtempSync(path.join(os.tmpdir(), "nimi-business-home-"))
+    );
     const ownerPath = require.resolve("../../src/helpers/appData");
     const original = Module._load;
     let appData = path.join(home, "context-one");
