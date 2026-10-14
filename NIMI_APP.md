@@ -6,9 +6,13 @@ Current delivery: [1.10.5](https://github.com/nimiplatform/openwhispr/releases/t
 is published through the protected tag workflow. Exact package, license, digest
 and build-provenance checks passed. [Registry PR 105](https://github.com/nimiplatform/nimi-app-registry/pull/105)
 passes candidate checks and awaits human admission. Final published bytes are
-downloaded and verified locally. The installed 1.10.4 checks below remain the
-observed business baseline; final-version/Catalog installation and any fresh
-microphone/paste check are not yet claimed.
+downloaded and verified locally. Home's Update from local file completed the
+1.10.4 to 1.10.5 update on Nimi 0.2.4 and displayed Installed 1.10.5. Home then
+launched the exact new managed package; the App opened its control panel, where
+Windows displayed a new network-access permission prompt. The agent left that
+system decision to the user. Final-version business/data-retention checks,
+Catalog installation and fresh microphone/paste are not yet claimed. The
+installed 1.10.4 checks below remain the observed business baseline.
 
 Local installed-package checks found and fixed two packaging defects: frontend
 dependency exclusions removed modules imported by the Host's Kit entry, and a
@@ -58,8 +62,9 @@ stored voice representations to named speaker profiles; it is not a claim that
 Nimi authenticates people. This declaration adds no permission or external send.
 
 Repository release immutability and protected `v*` update/deletion rules are
-configured. Public tag publication, Registry admission and installed-package
-acceptance are still pending and will be updated with their actual results.
+configured. Public tag publication and the final-version local update are
+complete. Registry admission and the remaining installed-package acceptance
+are pending as detailed above.
 
 ## Historical delivery — 2026-10-12
 
