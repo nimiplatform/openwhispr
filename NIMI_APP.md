@@ -17,9 +17,16 @@ Nimi transcription returned “Welcome back.”, saved a new note and retained i
 after renderer reload. This short-file request took noticeably longer than the
 clip duration; the cause is not established, so low-latency behavior is not
 claimed. Settings retained `mimo-v2.6-flash`, enabled dictation cleanup and the
-hold-Right-Ctrl shortcut. Fresh human microphone/cleanup/paste and Catalog
-installation remain pending. The installed 1.10.4 checks below retain their
-original scope.
+hold-Right-Ctrl shortcut. After the user reported an unavailable microphone and
+rebooted Windows, formal Home 0.2.4 and the same installed 1.10.5 package were
+restarted through their normal entry points. Local Whisper and automatic paste
+were confirmed enabled; a fresh blank Notepad tab was prepared. The user then
+completed the requested hold-Right-Ctrl microphone/cleanup/automatic-paste
+journey and confirmed that recognition matched expectations. This is a human
+confirmation of the installed-package journey; no verbatim output or measured
+latency was supplied, and no App code change is attributed to the OS recovery.
+Catalog installation remains pending. The installed 1.10.4 checks below retain
+their original scope.
 
 Local installed-package checks found and fixed two packaging defects: frontend
 dependency exclusions removed modules imported by the Host's Kit entry, and a
@@ -40,8 +47,8 @@ audio to “A clear voice makes the story easy to follow.”, saved the note and
 retained it after reload. MiMo actually searched and read that note and its
 result card reopened the original. Development and production use separate
 database filenames; the existing development database is retained, not silently
-copied into the fresh installation. New microphone/paste and final Catalog
-checks remain pending.
+copied into the fresh installation. The final 1.10.5 microphone/paste return is
+recorded above; final Catalog checks remain pending.
 
 This App's declared release target is Windows x86_64. There was no published
 OpenWhispr Nimi Release when this work resumed: the dependency upgrade,
@@ -70,8 +77,8 @@ Nimi authenticates people. This declaration adds no permission or external send.
 
 Repository release immutability and protected `v*` update/deletion rules are
 configured. Public tag publication and the final-version local update are
-complete. Registry admission and the remaining installed-package acceptance
-are pending as detailed above.
+complete. Registry admission and Catalog acceptance are pending as detailed
+above; optional unrun business paths retain their stated limits.
 
 ## Historical delivery — 2026-10-12
 
