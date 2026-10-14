@@ -8,11 +8,18 @@ and build-provenance checks passed. [Registry PR 105](https://github.com/nimipla
 passes candidate checks and awaits human admission. Final published bytes are
 downloaded and verified locally. Home's Update from local file completed the
 1.10.4 to 1.10.5 update on Nimi 0.2.4 and displayed Installed 1.10.5. Home then
-launched the exact new managed package; the App opened its control panel, where
-Windows displayed a new network-access permission prompt. The agent left that
-system decision to the user. Final-version business/data-retention checks,
-Catalog installation and fresh microphone/paste are not yet claimed. The
-installed 1.10.4 checks below remain the observed business baseline.
+launched the exact new managed package. After the user handled Windows' network
+prompt, the original note and chat history remained accessible. A fresh MiMo
+request actually searched and read the original note, returned “A clear voice
+makes the story easy to follow.” and opened the original from its result card.
+The native file picker imported the existing `installed-welcome.wav`; actual
+Nimi transcription returned “Welcome back.”, saved a new note and retained it
+after renderer reload. This short-file request took noticeably longer than the
+clip duration; the cause is not established, so low-latency behavior is not
+claimed. Settings retained `mimo-v2.6-flash`, enabled dictation cleanup and the
+hold-Right-Ctrl shortcut. Fresh human microphone/cleanup/paste and Catalog
+installation remain pending. The installed 1.10.4 checks below retain their
+original scope.
 
 Local installed-package checks found and fixed two packaging defects: frontend
 dependency exclusions removed modules imported by the Host's Kit entry, and a
