@@ -31,7 +31,7 @@ completed the requested hold-Right-Ctrl microphone/cleanup/automatic-paste
 journey and confirmed that recognition matched expectations. This is a human
 confirmation of the installed-package journey; no verbatim output or measured
 latency was supplied, and no App code change is attributed to the OS recovery.
-Catalog installation remains pending. The installed 1.10.4 checks below retain
+Catalog installation and the bounded return above are now complete. The installed 1.10.4 checks below retain
 their original scope.
 
 Local installed-package checks found and fixed two packaging defects: frontend
@@ -54,7 +54,7 @@ retained it after reload. MiMo actually searched and read that note and its
 result card reopened the original. Development and production use separate
 database filenames; the existing development database is retained, not silently
 copied into the fresh installation. The final 1.10.5 microphone/paste return is
-recorded above; final Catalog checks remain pending.
+recorded above; the subsequent Catalog return is recorded above.
 
 This App's declared release target is Windows x86_64. There was no published
 OpenWhispr Nimi Release when this work resumed: the dependency upgrade,
