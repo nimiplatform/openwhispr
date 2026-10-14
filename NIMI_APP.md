@@ -8,9 +8,17 @@ and build-provenance checks passed. [Registry PR 105](https://github.com/nimipla
 completed final checks and merged after explicit human approval for Windows x86_64 / stable, accepting the recorded limits. Catalog discovery, download,
 verification and first installation passed. Home launched the new `verified`
 1.10.5 package, and its Nimi Access became ready. Windows then displayed a new
-network-access prompt for this different managed executable path; it was left
-for the user. Catalog business acceptance is pending that system interaction.
-The local-imported installation and business data have not been removed.
+network-access prompt for this different managed executable path; the user
+handled it. Catalog onboarding was completed through the real UI with the
+previous English/Simplified-Chinese and hold-Right-Ctrl choices; optional screen
+context, external calendars and demo recordings were skipped. Original
+dictation, notes and chat history remained in App-owned storage. A fresh MiMo
+request actually searched and read the Welcome note, returned its English text
+and opened it from the result card. Renderer reload retained completed onboarding
+and the original note. This verifies Catalog launch, protected AI/tool use and
+data retention. The earlier human microphone/paste return used the identical
+published package through local import; no additional Catalog microphone
+recording is claimed. The local-imported installation and business data remain.
 Final published bytes are
 downloaded and verified locally. Home's Update from local file completed the
 1.10.4 to 1.10.5 update on Nimi 0.2.4 and displayed Installed 1.10.5. Home then
