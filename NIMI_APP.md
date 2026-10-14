@@ -8,9 +8,21 @@ Node-test SQLite rebuild left Electron's rebuild marker stale. Production builds
 now preserve runtime dependencies, force the matched Electron SQLite rebuild,
 and load the actual packaged database in an in-memory smoke check. Local versions
 1.10.2 and 1.10.3 were diagnostic imports only; neither was published. The next
-release candidate is 1.10.4. Windows CI for the migrated suite passed after fixing
+release candidate was 1.10.4. Windows CI for the migrated suite passed after fixing
 short-path and language-dependent test assumptions; the image test now also
 checks that text-only requests never claim screen context.
+
+Version 1.10.4 was published by its successful protected tag workflow. Registry
+preparation then rejected its empty release-notes field; 1.10.5 supplies an
+explicit portable notes file without changing business code. Both earlier
+published bytes and tags remain unchanged. On Nimi 0.2.4, the locally installed
+1.10.4 package completed the native file picker, transcribed the retained test
+audio to “A clear voice makes the story easy to follow.”, saved the note and
+retained it after reload. MiMo actually searched and read that note and its
+result card reopened the original. Development and production use separate
+database filenames; the existing development database is retained, not silently
+copied into the fresh installation. New microphone/paste and final Catalog
+checks remain pending.
 
 This App's declared release target is Windows x86_64. There was no published
 OpenWhispr Nimi Release when this work resumed: the dependency upgrade,

@@ -1,6 +1,6 @@
 {
   "name": "open-whispr",
-  "version": "1.10.4",
+  "version": "1.10.5",
   "description": "OpenWhispr desktop dictation, notes and assistant powered by the supervised Nimi AI Runtime",
   "main": "dist-electron/main.js",
   "private": true,

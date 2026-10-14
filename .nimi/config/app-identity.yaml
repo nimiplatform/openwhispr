@@ -1,6 +1,6 @@
 app_id: ai.nimi.openwhispr
 display_name: OpenWhispr
-version: 1.10.4
+version: 1.10.5
 npm_package_name: open-whispr
 cargo_package_name: open-whispr-shell
 tauri_identifier: ai.nimi.apps.ai.nimi.openwhispr
