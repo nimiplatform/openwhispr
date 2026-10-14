@@ -1,6 +1,6 @@
 # OpenWhispr → Nimi App
 
-## Release preparation — 2026-10-14
+## Final delivery — 2026-10-15
 
 Current delivery: [1.10.5](https://github.com/nimiplatform/openwhispr/releases/tag/v1.10.5)
 is published through the protected tag workflow. Exact package, license, digest
@@ -93,6 +93,20 @@ Repository release immutability and protected `v*` update/deletion rules are
 configured. Public tag publication and the final-version local update are
 complete. Registry admission, Catalog installation and the bounded business
 return above are complete; optional unrun paths retain their stated limits.
+The user closed this delivery at that scope on 2026-10-15. There is no pending
+superseded candidate to close, and no additional build or publication is part
+of this closeout. The local-file update is not evidence of a later Catalog
+version upgrade; that path and other platforms remain NOT-VERIFIED.
+
+The separately handed-off [Dashscope media repair](codex://threads/01a13b90-15af-7813-bd22-004ddd0e5c8e)
+and [Home/Lab exit repair](codex://threads/01a13b8f-edda-7611-b2cf-b3b13bfefa4c)
+sessions are complete. Media regression details remain in MoneyPrinterTurbo's
+NIMI_ADAPTATION.md and VoiceStudio's README; they do not add OpenWhispr coverage.
+The exit fix passed Windows product checks on the locally installed Nimi
+0.2.5-rc.1 candidate, with development environment restoration completed; no
+public Nimi release was made. Neither follow-up changes this App's published
+1.10.5 bytes or converts its earlier local-import microphone check into a fresh
+Catalog microphone check.
 
 ## Historical delivery — 2026-10-12
 
