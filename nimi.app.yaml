@@ -1,6 +1,6 @@
 app_id: ai.nimi.openwhispr
 display_name: OpenWhispr
-version: 1.10.2
+version: 1.10.4
 profile: standalone
 manifest_role: submitted-input
 app_access:

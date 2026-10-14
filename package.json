@@ -1,6 +1,6 @@
 {
   "name": "open-whispr",
-  "version": "1.10.2",
+  "version": "1.10.4",
   "description": "OpenWhispr desktop dictation, notes and assistant powered by the supervised Nimi AI Runtime",
   "main": "dist-electron/main.js",
   "private": true,
@@ -66,7 +66,7 @@
     "test:app": "pnpm run test",
     "build:electron": "node scripts/build-nimi-host.mjs",
     "build:electron:production": "pnpm run prepare:windows && pnpm run build:renderer && pnpm run build:electron && electron-builder --win --dir --config electron-builder.unsigned-win.json",
-    "prepare:windows": "pnpm run compile:winkeys && pnpm run compile:winpaste && cross-env CI=true node scripts/download-windows-mic-listener.js && pnpm run download:yt-dlp && cross-env QDRANT_VERSION=v1.19.2 node scripts/download-qdrant.js --current",
+    "prepare:windows": "pnpm run compile:winkeys && pnpm run compile:winpaste && cross-env CI=true node scripts/download-windows-mic-listener.js && pnpm run download:yt-dlp && cross-env QDRANT_VERSION=v1.19.2 node scripts/download-qdrant.js --current && electron-rebuild --force --only better-sqlite3",
     "dev:shell": "nimi-app dev",
     "dev:electron": "nimi-app dev --shell electron",
     "sync": "nimi-app sync",
@@ -85,6 +85,7 @@
   "license": "MIT",
   "devDependencies": {
     "@electron/notarize": "^3.0.1",
+    "@electron/rebuild": "4.2.1",
     "@eslint/js": "^9.39.4",
     "@nimiplatform/app-tools": "^0.12.0",
     "@nimiplatform/nimi-coding": "0.6.5",

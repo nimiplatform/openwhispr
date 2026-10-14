@@ -2,6 +2,16 @@
 
 ## Release preparation — 2026-10-14
 
+Local installed-package checks found and fixed two packaging defects: frontend
+dependency exclusions removed modules imported by the Host's Kit entry, and a
+Node-test SQLite rebuild left Electron's rebuild marker stale. Production builds
+now preserve runtime dependencies, force the matched Electron SQLite rebuild,
+and load the actual packaged database in an in-memory smoke check. Local versions
+1.10.2 and 1.10.3 were diagnostic imports only; neither was published. The next
+release candidate is 1.10.4. Windows CI for the migrated suite passed after fixing
+short-path and language-dependent test assumptions; the image test now also
+checks that text-only requests never claim screen context.
+
 This App's declared release target is Windows x86_64. There was no published
 OpenWhispr Nimi Release when this work resumed: the dependency upgrade,
 Electron clipboard migration and test migration remained uncommitted.

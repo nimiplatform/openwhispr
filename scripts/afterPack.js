@@ -219,12 +219,35 @@ function verifyUnpackedBinaries(context) {
 // Main hook
 // ---------------------------------------------------------------------------
 
+function verifyPackagedDatabase(context) {
+  if (context.electronPlatformName !== "win32") return;
+  const executable = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`);
+  const databaseModule = path.join(resolveResourcesDir(context), "app.asar/node_modules/better-sqlite3");
+  // Load the shipped native module with the shipped Electron ABI, without
+  // launching the App or touching any user database. Node tests can otherwise
+  // leave a different binary behind while electron-rebuild's marker is stale.
+  execFileSync(executable, ["-e", `
+    const Database = require(process.argv[1]);
+    const db = new Database(':memory:');
+    if (db.prepare('SELECT 1 AS ready').get().ready !== 1) throw new Error('SQLite failed');
+    db.close();
+  `, databaseModule], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    windowsHide: true,
+    stdio: "pipe",
+    timeout: 30000,
+  });
+  console.log("  afterPack: loaded packaged SQLite with the shipped Electron ABI");
+}
+
 exports.default = async function (context) {
   wrapLinuxBinary(context);
   verifyMeetingAecHelper(context);
   verifyUnpackedBinaries(context);
+  verifyPackagedDatabase(context);
   registerMacResourceBinariesForSigning(context);
 };
 
 exports.verifyWindowsKeyListener = verifyWindowsKeyListener;
 exports.verifyUnpackedBinaries = verifyUnpackedBinaries;
+exports.verifyPackagedDatabase = verifyPackagedDatabase;

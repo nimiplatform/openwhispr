@@ -210,6 +210,9 @@ importers:
       '@electron/notarize':
         specifier: ^3.0.1
         version: 3.1.1
+      '@electron/rebuild':
+        specifier: 4.2.1
+        version: 4.2.1
       '@eslint/js':
         specifier: ^9.39.4
         version: 9.39.5
@@ -8768,11 +8771,11 @@ snapshots:
 
   node-abi@4.36.0:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   node-api-version@0.2.1:
     dependencies:
-      semver: 7.7.4
+      semver: 7.8.5
 
   node-gyp@12.4.0:
     dependencies:
@@ -8781,7 +8784,7 @@ snapshots:
       graceful-fs: 4.2.11
       nopt: 9.0.0
       proc-log: 6.1.0
-      semver: 7.7.4
+      semver: 7.8.5
       tar: 7.5.22
       tinyglobby: 0.2.17
       undici: 6.29.0
