@@ -91,8 +91,8 @@ Nimi authenticates people. This declaration adds no permission or external send.
 
 Repository release immutability and protected `v*` update/deletion rules are
 configured. Public tag publication and the final-version local update are
-complete. Registry admission is complete; Catalog acceptance is pending as detailed
-above; optional unrun business paths retain their stated limits.
+complete. Registry admission, Catalog installation and the bounded business
+return above are complete; optional unrun paths retain their stated limits.
 
 ## Historical delivery — 2026-10-12
 
