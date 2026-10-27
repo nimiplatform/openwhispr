@@ -64,14 +64,15 @@
     "preview": "cd src && vite preview",
     "clean": "node cleanup.js",
     "test:app": "pnpm run test",
-    "build:electron": "node scripts/build-nimi-host.mjs",
+    "build:electron": "pnpm run rebuild:electron-native && node scripts/build-nimi-host.mjs",
     "build:electron:production": "pnpm run prepare:windows && pnpm run build:renderer && pnpm run build:electron && electron-builder --win --dir --config electron-builder.unsigned-win.json",
     "prepare:windows": "pnpm run compile:winkeys && pnpm run compile:winpaste && cross-env CI=true node scripts/download-windows-mic-listener.js && pnpm run download:yt-dlp && cross-env QDRANT_VERSION=v1.19.2 node scripts/download-qdrant.js --current && electron-rebuild --force --only better-sqlite3",
     "dev:shell": "nimi-app dev",
     "dev:electron": "nimi-app dev --shell electron",
     "sync": "nimi-app sync",
     "typecheck:renderer": "cd src && tsc --noEmit",
-    "typecheck:host": "tsc --allowJs --checkJs false --noEmit --skipLibCheck --target es2022 --module nodenext --moduleResolution nodenext src/helpers/nimiEmbeddings.js src/helpers/vectorIndex.js src/helpers/nimiMeetingTranscript.js src/helpers/speakerEmbeddings.js"
+    "typecheck:host": "tsc --allowJs --checkJs false --noEmit --skipLibCheck --target es2022 --module nodenext --moduleResolution nodenext src/helpers/nimiEmbeddings.js src/helpers/vectorIndex.js src/helpers/nimiMeetingTranscript.js src/helpers/speakerEmbeddings.js",
+    "rebuild:electron-native": "electron-rebuild --force --only better-sqlite3"
   },
   "keywords": [
     "dictation",
@@ -87,8 +88,8 @@
     "@electron/notarize": "^3.0.1",
     "@electron/rebuild": "4.2.1",
     "@eslint/js": "^9.39.4",
-    "@nimiplatform/app-tools": "^0.12.0",
-    "@nimiplatform/nimi-coding": "0.6.5",
+    "@nimiplatform/app-tools": "^0.14.0",
+    "@nimiplatform/nimi-coding": "0.7.0",
     "@tailwindcss/vite": "^4.2.2",
     "@types/canvas-confetti": "^1.9.0",
     "@types/react": "^19.1.2",
@@ -97,7 +98,7 @@
     "autoprefixer": "^10.5.0",
     "concurrently": "^10.0.3",
     "cross-env": "^10.0.0",
-    "electron": "^44.5.1",
+    "electron": "^45.0.0",
     "electron-builder": "^26.4.0",
     "emojibase-data": "^17.0.0",
     "esbuild": "^0.28.2",
@@ -123,9 +124,9 @@
     "@fontsource-variable/inter": "^5.3.0",
     "@homebridge/dbus-native": "^0.7.7",
     "@napi-rs/keyring": "^1.3.0",
-    "@nimiplatform/kit": "^0.19.0",
-    "@nimiplatform/sdk": "^0.21.0",
-    "@nimiplatform/sdk-adapter-vercel-ai": "^0.5.0",
+    "@nimiplatform/kit": "^0.22.1",
+    "@nimiplatform/sdk": "^0.22.2",
+    "@nimiplatform/sdk-adapter-vercel-ai": "^0.6.2",
     "@qdrant/js-client-rest": "^1.12.0",
     "@radix-ui/react-accordion": "^1.1.2",
     "@radix-ui/react-dialog": "^1.1.14",
@@ -153,7 +154,7 @@
     "@tiptap/suggestion": "3.31.3",
     "ai": "^7.0.130",
     "better-auth": "1.6.27",
-    "better-sqlite3": "12.11.1",
+    "better-sqlite3": "13.0.3",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -217,5 +218,5 @@
     "shell-quote": "1.12.0",
     "tmp": "0.2.7"
   },
-  "packageManager": "pnpm@10.34.5"
+  "packageManager": "pnpm@10.34.7"
 }

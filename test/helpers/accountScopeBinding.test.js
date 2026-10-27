@@ -15,12 +15,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const binding = require("../../src/helpers/accountScopeBinding.js");
+const { getAppDataDirectory } = require("../../src/helpers/appData.js");
 Module._load = originalLoad;
 
 function freshUserData(t) {
   userDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "account-scope-binding-"));
-  t.after(() => fs.rmSync(userDataDirectory, { recursive: true, force: true }));
-  return userDataDirectory;
+  const root = userDataDirectory;
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return getAppDataDirectory();
 }
 
 const sha256 = (value) => crypto.createHash("sha256").update(value, "utf8").digest("hex");

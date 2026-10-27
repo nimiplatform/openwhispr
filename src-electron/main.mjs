@@ -19,6 +19,11 @@ const {
 } = await import("@nimiplatform/kit/shell/electron/main");
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const nativeAppIconPath = path.join(root, "assets", "native", process.platform === "win32" ? "windows.ico" : process.platform === "darwin" ? "macos.png" : "app.png");
+// The business UI owns its windows; apply the same platform asset to each one.
+app.on("browser-window-created", (_event, window) => {
+  if (process.platform !== "darwin") window.setIcon(nativeAppIconPath);
+});
 const nimiAI = require("../src/helpers/nimiAI.js");
 const developmentUrl = process.argv.find((value) => value.startsWith("--nimi-dev-renderer-url="));
 const rendererUrl = developmentUrl
@@ -44,6 +49,7 @@ if (developmentUrl) {
 
 registerNimiElectronAppAssetProtocolScheme(protocol);
 app.whenReady().then(() => {
+  if (process.platform === "darwin" && !app.isPackaged) app.dock?.setIcon(nativeAppIconPath);
   const bridge = registerNimiElectronAppBridge({
     appId: "ai.nimi.openwhispr",
     allowedRendererUrls: [

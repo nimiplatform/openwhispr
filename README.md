@@ -1,3 +1,9 @@
+Current development dependencies are SDK 0.22.2, Kit/native 0.22.1, App Tools 0.14.0 and Nimi Coding 0.7.0, with the Vercel AI adapter 0.6.2. The checked-in pnpm lock resolves these packages from the public registry. Run `pnpm install --frozen-lockfile`, `pnpm exec nimi-app check`, then `pnpm dev` with a matching source-built Nimi Runtime and Home. App versions and published App releases are unchanged. Earlier versioned notes retain their original acceptance scope. Home uses the App-owned root `NIMI_APP.md`; this README remains developer documentation.
+
+Upgrade verification: registry installation, frozen-lockfile installation, App Tools checks and type checks passed. The Node suite has 6,656 passing tests, 18 skips and one TODO. Electron 45 and better-sqlite3 13.0.3 now share the actual development carrier ABI; `build:electron` rebuilds SQLite after Node tests so the supervised launch no longer blocks before window creation. The real macOS dev panel opens Nimi model configuration. Recording, live transcription and optional OpenWhispr cloud authentication remain NOT-VERIFIED for this upgrade; no model selection was changed.
+
+[App introduction and usage](NIMI_APP.md)
+
 <p align="center">
   <img src="src/assets/logo.svg" alt="OpenWhispr" width="120" />
 </p>

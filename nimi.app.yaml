@@ -55,7 +55,6 @@ storage_policy:
 metadata:
   summary: Desktop dictation, voice assistance and meeting notes using Nimi AI.
   icon: src/assets/icon.png
-  readme: NIMI_APP.md
   release_notes: NIMI_RELEASE_NOTES.md
 local_development:
   electron:

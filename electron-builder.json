@@ -17,6 +17,7 @@
   "npmRebuild": true,
   "buildDependenciesFromSource": false,
   "files": [
+    "assets/native/**/*",
     "dist-electron/**/*",
     "main.js",
     "preload.js",
@@ -144,7 +145,7 @@
       "dmg",
       "zip"
     ],
-    "icon": "src/assets/icon.icns",
+    "icon": "assets/native/macos.icns",
     "gatekeeperAssess": false,
     "hardenedRuntime": true,
     "entitlements": "resources/mac/entitlements.mac.plist",
@@ -171,7 +172,7 @@
     "target": [
       "nsis"
     ],
-    "icon": "src/assets/icon.ico",
+    "icon": "assets/native/windows.ico",
     "forceCodeSigning": true,
     "azureSignOptions": {
       "endpoint": "https://eus.codesigning.azure.net/",
